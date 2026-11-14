@@ -104,12 +104,21 @@ export function resolveReasoning(
 }
 
 
+/**
+ * A completion that opens with the tool-call array did not continue the
+ * prompt's open think block: an endpoint that serves the grammar
+ * transport as chat (the subscription CLIs) starts its reply fresh.
+ * Re-opening the block there turns a stray close tag after the array
+ * into the end of the reasoning, and the call into an empty body.
+ */
+const OPENS_WITH_TOOL_CALL = /^\s*\[?\s*\{\s*"tool"\s*:/;
+
 export function normalizeContent(
   completion: CompletionResult,
   profile: ModelProfile,
   assumeOpenReasoning: boolean,
 ): string {
-  return assumeOpenReasoning
+  return assumeOpenReasoning && !OPENS_WITH_TOOL_CALL.test(completion.content)
     ? `${getReasoningOpenTagPrefix(profile)}${completion.content}`
     : completion.content;
 }
