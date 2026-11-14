@@ -137,6 +137,15 @@ export interface UserManagedLocalLlmConfig {
    */
   swaFull: SwaFullPreference;
   /**
+   * `--ubatch-size` for the managed daemon: the physical batch a prompt
+   * is decoded in. `0` (default) passes nothing of its own, so the
+   * launch keeps the built-in choice: llama-server's default, or the
+   * 1024 a vision model is launched with (see `buildLlamaServerArgs`
+   * for why that one is raised). A positive number replaces either.
+   * Applied on the next daemon start.
+   */
+  ubatchSize: number;
+  /**
    * Stop the managed chat daemon when the last CLI session exits.
    * `true` (default) — closing the terminal frees the RAM/VRAM the
    * model was holding; a second live session keeps the daemon up (see

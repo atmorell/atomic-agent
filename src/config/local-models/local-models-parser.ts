@@ -420,6 +420,10 @@ export function prepareLocalModelsInputs(
       rawManaged.swaFull ?? readDefaults().managed.swaFull,
       "localModels.managed.swaFull",
     ),
+    ubatchSize: parseNonNegativeInt(
+      rawManaged.ubatchSize ?? readDefaults().managed.ubatchSize,
+      "localModels.managed.ubatchSize",
+    ),
   };
 
   const rawEmbeddings =

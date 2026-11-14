@@ -293,6 +293,33 @@ describe("buildLlamaServerArgs", () => {
     expect(args).not.toContain("--batch-size");
   });
 
+  it("takes --ubatch-size from a configured ubatchSize, with and without a projector", () => {
+    const withProjector = buildLlamaServerArgs(
+      {
+        ...baseOpts,
+        mmprojFile: "/tmp/data/models/qwen-3.5-4b/mmproj-F16.gguf",
+        ubatchSize: 512,
+      },
+      "/tmp/data/models/qwen-3.5-4b/weights.gguf",
+      "qwen-3.5-4b",
+    );
+    expect(withProjector[withProjector.indexOf("--ubatch-size") + 1]).toBe("512");
+    expect(withProjector[withProjector.indexOf("--batch-size") + 1]).toBe("2048");
+    const textOnly = buildLlamaServerArgs(
+      { ...baseOpts, ubatchSize: 512 },
+      "/tmp/data/models/qwen-3.5-4b/weights.gguf",
+      "qwen-3.5-4b",
+    );
+    expect(textOnly[textOnly.indexOf("--ubatch-size") + 1]).toBe("512");
+    expect(textOnly).not.toContain("--batch-size");
+    const unset = buildLlamaServerArgs(
+      { ...baseOpts, ubatchSize: 0 },
+      "/tmp/data/models/qwen-3.5-4b/weights.gguf",
+      "qwen-3.5-4b",
+    );
+    expect(unset).not.toContain("--ubatch-size");
+  });
+
   it("appends --device when a concrete device id is set, keeping -ngl -1", () => {
     const args = buildLlamaServerArgs(
       { ...baseOpts, device: "Vulkan0" },

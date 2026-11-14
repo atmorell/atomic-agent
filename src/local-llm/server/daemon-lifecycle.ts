@@ -224,6 +224,12 @@ export interface DaemonStartOptions {
    */
   swaFullFlag?: boolean;
   /**
+   * `localModels.managed.ubatchSize`: `--ubatch-size` for this launch.
+   * Undefined or `0` keeps the built-in choice, so a launch that passes
+   * nothing stays byte-identical.
+   */
+  ubatchSize?: number;
+  /**
    * Run the throughput probe once the server is healthy (default
    * `true`): one 64-token completion whose `timings.predicted_per_second`
    * is written next to the pid file and shown to the fusion orchestrator
@@ -679,6 +685,10 @@ export function buildLlamaServerArgs(
   if (opts.swaFullFlag === true) {
     args.push("--swa-full");
   }
+  const ubatchSize =
+    opts.ubatchSize !== undefined && opts.ubatchSize > 0
+      ? String(opts.ubatchSize)
+      : undefined;
   if (opts.mmprojFile) {
     args.push("--mmproj", opts.mmprojFile);
     // Vision-capable models (notably Gemma-4 with `gemma4v` projector and
@@ -697,10 +707,12 @@ export function buildLlamaServerArgs(
       "--image-max-tokens",
       "560",
       "--ubatch-size",
-      "1024",
+      ubatchSize ?? "1024",
       "--batch-size",
       "2048",
     );
+  } else if (ubatchSize !== undefined) {
+    args.push("--ubatch-size", ubatchSize);
   }
   return args;
 }

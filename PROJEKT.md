@@ -30,6 +30,9 @@ Se selv: `git log --oneline main..fusion-cache`
   som en fortsat tænkeblok. Før blev kaldet slugt af et løst `</think>` til sidst.
 - `src/prompt/default-tool-args-schemas.ts`: skemaet for `fusion.delegate`
   kender `etaSeconds`, som prompten selv beder om.
+- `localModels.managed.ubatchSize` (ny indstilling, standard `0`): sætter
+  `--ubatch-size` på den styrede llama-server. `0` ændrer intet. Ligger i
+  `src/config/local-models/` og `src/local-llm/server/daemon-lifecycle.ts`.
 - Forsøgt og forkastet: at fortsætte sessionen efter et afvist svar. Claude
   stolede på sit eget digtede resultat. Står som et commit og dets tilbagerulning.
 

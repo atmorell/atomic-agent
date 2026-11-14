@@ -1107,6 +1107,22 @@ describe("parseUserConfigFile", () => {
     ).toThrow(/localModels\.managed\.swaFull/);
   });
 
+  it("defaults localModels.managed.ubatchSize to 0 and rejects a negative value", () => {
+    expect(USER_CONFIG_DEFAULTS.localModels.managed.ubatchSize).toBe(0);
+    expect(
+      parseUserConfigFile({
+        version: USER_CONFIG_VERSION,
+        localModels: { managed: { ubatchSize: 512 } },
+      }).localModels.managed.ubatchSize,
+    ).toBe(512);
+    expect(() =>
+      parseUserConfigFile({
+        version: USER_CONFIG_VERSION,
+        localModels: { managed: { ubatchSize: -1 } },
+      }),
+    ).toThrow(/localModels\.managed\.ubatchSize/);
+  });
+
   it("defaults localModels.managed.parallel to auto (the machine decides)", () => {
     // v63: the slot count stopped being an operator setting. `"auto"`
     // resolves against the context the daemon actually launches with.

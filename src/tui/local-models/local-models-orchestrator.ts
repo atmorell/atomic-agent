@@ -2279,6 +2279,7 @@ export class LocalModelsOrchestrator {
           parallel: cfg.localModels.managed.parallel,
           localLegRole,
           swaFull: cfg.localModels.managed.swaFull,
+          ubatchSize: cfg.localModels.managed.ubatchSize,
           ...(device ? { device } : {}),
           // No multi-GPU split on the CPU-build retry.
           ...(multiGpu && device !== "cpu" ? { tensorSplit } : {}),

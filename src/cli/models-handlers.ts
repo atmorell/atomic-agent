@@ -759,6 +759,7 @@ export async function runLocalModelsStart(
         parallel: cfg.localModels.managed.parallel,
         localLegRole,
         swaFull: cfg.localModels.managed.swaFull,
+        ubatchSize: cfg.localModels.managed.ubatchSize,
         ...(tpl ? { chatTemplateFile: tpl } : {}),
         ...(mmprojFile ? { mmprojFile } : {}),
         ...(dev ? { device: dev } : {}),

@@ -32,6 +32,7 @@ Checked snapshot of primitive USER_CONFIG_DEFAULTS values for config version 79.
 - `localModels.managed.contextSize` (default `0`).
 - `localModels.managed.parallel` (default `"auto"`).
 - `localModels.managed.swaFull` (default `"auto"`).
+- `localModels.managed.ubatchSize` (default `0`).
 - `localModels.embeddings.enabled` (default `false`).
 - `localModels.embeddings.modelId` (default `null`).
 - `localModels.embeddings.port` (default `19092`).
