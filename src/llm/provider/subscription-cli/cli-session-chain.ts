@@ -23,6 +23,14 @@ const FIXED_PART_END = "\n### capabilities";
  */
 const MAX_MOVED_TAIL_CHARS = 400;
 
+/**
+ * The same prompt again means the caller threw the last answer away (a
+ * parse retry). The session still holds that answer, so the step is asked
+ * again in it instead of writing the whole conversation to the cache anew.
+ */
+export const DISCARDED_ANSWER_NOTE =
+  "Your previous answer could not be used and was discarded; nothing in it was run. Answer this step again, in the required tool-call format only.";
+
 /** What one answered call leaves behind for the next call to continue. */
 export interface CliSessionLink {
   id: string;
@@ -62,17 +70,14 @@ export function planCliSessionTurn(
     while (shared < limit && previous.user[shared] === user[shared]) shared += 1;
     const movedTail = previous.user.slice(shared);
     const added = user.slice(shared);
-    if (
-      movedTail.length <= MAX_MOVED_TAIL_CHARS &&
-      added.endsWith(movedTail) &&
-      added.trim().length > 0
-    ) {
-      const input = withoutOwnAnswer(added, previous.answer);
+    if (movedTail.length <= MAX_MOVED_TAIL_CHARS && added.endsWith(movedTail)) {
+      const input =
+        added.trim().length > 0
+          ? withoutOwnAnswer(added, previous.answer)
+          : DISCARDED_ANSWER_NOTE;
       return { id: previous.id, resume: true, system, user, input };
     }
   }
-  // Also the path for an identical re-send (a parse retry): a session
-  // cannot be resumed from before its last answer.
   return { id: newId(), resume: false, system, user, input: user };
 }
 

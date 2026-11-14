@@ -14,6 +14,7 @@ import {
   CLAUDE_CLI_SYSTEM_PROMPT,
   claudeCliAdapter,
 } from "./claude-cli-adapter.js";
+import { DISCARDED_ANSWER_NOTE } from "./cli-session-chain.js";
 import {
   runCliCommand,
   type CliRunOptions,
@@ -321,17 +322,19 @@ describe("SubscriptionCliProvider CLI session", () => {
     expect(seen[1]?.system).toBe(seen[0]?.system);
   });
 
-  it("starts a new session when the same prompt comes again", async () => {
+  it("asks again in the same session when the same prompt comes again", async () => {
     const seen: Seen[] = [];
     const provider = buffered(seen);
     await provider.complete({ prompt: FIRST, sessionId: "s1" });
     await provider.complete({ prompt: FIRST, sessionId: "s1" });
+    await provider.complete({ prompt: SECOND, sessionId: "s1" });
 
-    expect(after(seen[1], "--resume")).toBeUndefined();
-    expect(after(seen[1], "--session-id")).not.toBe(
-      after(seen[0], "--session-id"),
-    );
-    expect(seen[1]?.input).toBe(`${HEAD}${TAIL}`);
+    const id = after(seen[0], "--session-id");
+    expect(after(seen[1], "--resume")).toBe(id);
+    expect(seen[1]?.input).toBe(DISCARDED_ANSWER_NOTE);
+    // The conversation continues from the answer that replaced it.
+    expect(after(seen[2], "--resume")).toBe(id);
+    expect(seen[2]?.input).toBe(`${RESULT_LINE}${TAIL}`);
   });
 
   it("keeps each conversation on its own session", async () => {
