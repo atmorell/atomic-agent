@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import { renderCloudTurn } from "../../../session/cloud-context.js";
 import {
-  DISCARDED_ANSWER_NOTE,
   planCliSessionTurn,
   restartCliSessionTurn,
   withoutOwnAnswer,
@@ -72,14 +71,13 @@ describe("planCliSessionTurn", () => {
     expect(turn?.user).toBe(`${HEAD}\n${CALL_LINE}${RESULT_LINE}${TAIL}`);
   });
 
-  it("asks again in the same session when the same prompt is sent again", () => {
+  it("starts a new session when the same prompt is sent again", () => {
     const previous = answered(prompt(HEAD));
     const turn = planCliSessionTurn("BASE", prompt(HEAD), previous, () => "new");
 
-    expect(turn?.resume).toBe(true);
-    expect(turn?.id).toBe(previous.id);
-    expect(turn?.input).toBe(DISCARDED_ANSWER_NOTE);
-    expect(turn?.user).toBe(`${HEAD}${TAIL}`);
+    expect(turn?.resume).toBe(false);
+    expect(turn?.id).toBe("new");
+    expect(turn?.input).toBe(`${HEAD}${TAIL}`);
   });
 
   it("starts a new session when earlier conversation was rewritten", () => {
