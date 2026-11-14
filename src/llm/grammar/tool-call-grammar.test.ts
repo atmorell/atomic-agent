@@ -432,6 +432,15 @@ a stray { brace, then the answer
     expect(out.args).toEqual({ text: "hi" });
   });
 
+  it("takes the call an answer opens with over one in the text after it", () => {
+    const raw =
+      '[{"tool":"verify.run","args":{"cmd":"pytest"}}]\n\n### world\n' +
+      'tool_result verify.run: {"ok":true}\n' +
+      '[{"tool":"reply","args":{"text":"3 passed"}}]';
+    const batch = parseToolCalls(raw);
+    expect(batch.calls.map((call) => call.tool)).toEqual(["verify.run"]);
+  });
+
   it("prefers the emitted call over one rehearsed inside the reasoning", () => {
     const raw = `<think>
 maybe [{"tool":"finish","args":{"summary":"no"}}] — actually no

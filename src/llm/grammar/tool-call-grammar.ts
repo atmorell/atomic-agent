@@ -452,6 +452,8 @@ function spanValue(span: RootSpan): { ok: boolean; value: unknown } {
  * `[1]`, a rehearsed `{...}`), so the first balanced span is NOT
  * necessarily the call — preference order is:
  *
+ *  0. the span the text OPENS with, when it is a tool call (nothing
+ *     was rehearsed before it; text after it is not the answer),
  *  1. the LAST top-level span that parses and looks like a tool call
  *     (the model's final answer wins over anything it rehearsed while
  *     thinking) — widened to nested spans only when NO top-level span
@@ -472,6 +474,16 @@ function extractJsonRoot(raw: string): ExtractedRoot {
 
   const { spans, sawOpen } = collectRootSpans(input);
   const roots = spans.filter((span) => span.depth === 0);
+  // An answer that OPENS with the call is the call. What follows it is
+  // a continuation the model made up (an invented result, a later
+  // step), and a call written there must not outrank the real one.
+  const opening = roots[0];
+  if (opening !== undefined && input.startsWith(opening.jsonText)) {
+    const { ok, value } = spanValue(opening);
+    if (ok && looksLikeToolCallRoot(value)) {
+      return { jsonText: opening.jsonText, kind: opening.kind };
+    }
+  }
   // Nested spans are only in play when the top level never closed —
   // otherwise a malformed batch (`[{...}, 42]`) would silently degrade
   // to whichever entry happens to be well-formed, dropping calls the
