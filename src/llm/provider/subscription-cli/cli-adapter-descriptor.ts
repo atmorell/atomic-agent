@@ -16,6 +16,13 @@ export interface CliArgsInput {
   responseSchemaPath?: string;
   maxBudgetUsd?: number;
   extraArgs: readonly string[];
+  /**
+   * A conversation kept on the CLI's side: the first call names it,
+   * later calls resume it and send only what is new. The system prompt
+   * comes from a file, because here it carries the fixed part of the
+   * prompt and that is far past any argv limit. Absent: a stateless call.
+   */
+  session?: { id: string; resume: boolean; systemPromptFile: string };
 }
 
 /** One parsed line of a streaming CLI's NDJSON output. */
@@ -52,6 +59,8 @@ export interface CliAdapterDescriptor {
   readonly defaultChatModel: string;
   /** Replaces the CLI's own system prompt for the duration of a turn. */
   readonly systemPrompt: string;
+  /** The argv builders honour `CliArgsInput.session`. */
+  readonly resumesSessions?: boolean;
   readonly staticModels: readonly string[];
   readonly contextWindow: number;
   /**

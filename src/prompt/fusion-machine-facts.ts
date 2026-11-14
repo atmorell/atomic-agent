@@ -111,7 +111,8 @@ function nonEmpty(value: string | null | undefined): string | null {
  * config leaves — an external server, whose `--parallel` the operator
  * chose out of band — and it is observed, never guessed, so it may be
  * stated. It moves once, when first observed, and the prefix moves with
- * it: the same one-time cost as a config write.
+ * it: the same one-time cost as a config write. Between turns, never
+ * inside one — see `turnStableWorkerSlots`.
  *
  * `tokensPerSecond` is the daemon's single-stream decode speed from the
  * throughput probe (`ModelProfileManager.getTokensPerSecond`), `null`
@@ -121,6 +122,28 @@ function nonEmpty(value: string | null | undefined): string | null {
 export interface FusionLiveFacts {
   workerSlots?: number | null;
   tokensPerSecond?: number | null;
+}
+
+/**
+ * The observed slot count as one turn may state it: a count that was
+ * unknown at the turn's first step stays unknown until the turn ends.
+ *
+ * With a cloud orchestrator nothing asks the local server anything until
+ * the turn's own first delegation, so the count would appear between
+ * step one and step two — and every step after it would pay for the
+ * whole conversation again, because the bytes ahead of it changed. The
+ * next turn states it. A count that was known follows the server as
+ * before: a daemon restarted with other slots has a cold cache anyway.
+ */
+export function turnStableWorkerSlots(
+  read: () => number | null,
+): () => number | null {
+  let unknown: boolean | undefined;
+  return () => {
+    const now = read();
+    unknown ??= now === null;
+    return unknown ? null : now;
+  };
 }
 
 /**

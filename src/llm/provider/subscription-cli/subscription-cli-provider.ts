@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,13 +17,23 @@ import type {
 import { VisionUnsupportedError } from "../llm-provider.js";
 import type { RateLimitWindow } from "../rate-limits.js";
 import type { ToolCallAdapter } from "../adapters/tool-call-adapter.js";
-import type { CliAdapterDescriptor } from "./cli-adapter-descriptor.js";
+import type {
+  CliAdapterDescriptor,
+  CliArgsInput,
+} from "./cli-adapter-descriptor.js";
+import {
+  planCliSessionTurn,
+  restartCliSessionTurn,
+  type CliSessionLink,
+  type CliSessionTurn,
+} from "./cli-session-chain.js";
 import { resolveCliBinary } from "./resolve-cli-binary.js";
 import { runCliCommand, type CliRunner } from "./run-cli-completion.js";
 import {
   streamCliCommand,
   type CliStreamRunner,
 } from "./stream-cli-completion.js";
+import { SubscriptionCliInvocationError } from "./subscription-cli-errors.js";
 
 /** Matches `OpenAiProvider`'s default; a CLI turn is never quick. */
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -33,6 +44,8 @@ const DEFAULT_TIMEOUT_MS = 600_000;
 const MAX_COMPLETION_BYTES = 8 * 1024 * 1024;
 const HEALTH_TIMEOUT_MS = 5_000;
 const MAX_HEALTH_BYTES = 64 * 1024;
+/** Conversations whose CLI session is remembered; the oldest goes first. */
+const MAX_TRACKED_SESSIONS = 64;
 
 export interface SubscriptionCliProviderOptions {
   id: string;
@@ -96,6 +109,8 @@ export class SubscriptionCliProvider implements LlmProvider {
   private readonly onNotice: ((message: string) => void) | undefined;
   private readonly runCli: CliRunner;
   private readonly streamCli: CliStreamRunner;
+  /** Last answered call per conversation (`CompletionRequest.sessionId`). */
+  private readonly sessions = new Map<string, CliSessionLink>();
 
   constructor(options: SubscriptionCliProviderOptions) {
     const descriptor = options.descriptor;
@@ -131,16 +146,97 @@ export class SubscriptionCliProvider implements LlmProvider {
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResult> {
+    let turn = this.planTurn(request);
+    for (;;) {
+      const system = await this.stageSystemPrompt(turn);
+      try {
+        const result = await this.completeOnce(request, turn, system.session);
+        this.keepTurn(request, turn, result);
+        return result;
+      } catch (err) {
+        if (!turn?.resume || !isRefusedResume(err, request)) throw err;
+        turn = restartCliSessionTurn(turn, randomUUID);
+      } finally {
+        await system.cleanup();
+      }
+    }
+  }
+
+  private async completeOnce(
+    request: CompletionRequest,
+    turn: CliSessionTurn | null,
+    session: CliArgsInput["session"],
+  ): Promise<CompletionResult> {
     const staged = await this.stageSchema(request);
     try {
       const args = this.descriptor.completeArgs(
-        this.argsInput(request, staged.path),
+        this.argsInput(request, staged.path, session),
       );
-      const outcome = await this.runCli(this.runOptions(args, request));
+      const outcome = await this.runCli(this.runOptions(args, request, turn));
       return this.descriptor.parseResult(outcome.stdout, this.model);
     } finally {
       await staged.cleanup();
     }
+  }
+
+  /**
+   * Decide whether this call continues a CLI session (`cli-session-chain`).
+   * Side calls with a response schema stay stateless. The link is taken
+   * out while the call is in flight: a session continues only from its
+   * last answered call, so a concurrent or failed one starts a new one.
+   */
+  private planTurn(request: CompletionRequest): CliSessionTurn | null {
+    const key = request.sessionId;
+    if (!this.descriptor.resumesSessions || !key || request.responseFormat) {
+      return null;
+    }
+    const turn = planCliSessionTurn(
+      this.descriptor.systemPrompt,
+      request.prompt,
+      this.sessions.get(key),
+      randomUUID,
+    );
+    if (turn) this.sessions.delete(key);
+    return turn;
+  }
+
+  private keepTurn(
+    request: CompletionRequest,
+    turn: CliSessionTurn | null,
+    result: CompletionResult,
+  ): void {
+    if (!turn || !request.sessionId) return;
+    this.sessions.set(request.sessionId, {
+      id: turn.id,
+      system: turn.system,
+      user: turn.user,
+      answer: result.content,
+    });
+    if (this.sessions.size > MAX_TRACKED_SESSIONS) {
+      const oldest = this.sessions.keys().next().value;
+      if (oldest !== undefined) this.sessions.delete(oldest);
+    }
+  }
+
+  /**
+   * A session's system prompt carries the fixed part of the prompt, far
+   * past what argv holds (and past cmd.exe's line limit on a Windows
+   * shim), so the CLI reads it from a file.
+   */
+  private async stageSystemPrompt(turn: CliSessionTurn | null): Promise<{
+    session?: NonNullable<CliArgsInput["session"]>;
+    cleanup: () => Promise<void>;
+  }> {
+    if (!turn) return { cleanup: async () => {} };
+    const dir = await mkdtemp(join(tmpdir(), "atomic-cli-system-"));
+    const path = join(dir, "system.txt");
+    await writeFile(path, turn.system, "utf8");
+    return {
+      session: { id: turn.id, resume: turn.resume, systemPromptFile: path },
+      cleanup: async () => {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      },
+    };
   }
 
   /**
@@ -182,16 +278,47 @@ export class SubscriptionCliProvider implements LlmProvider {
       return result;
     }
 
-    const args = this.descriptor.streamArgs(this.argsInput(request));
-    const lines = this.streamCli(this.runOptions(args, request));
+    let turn = this.planTurn(request);
+    const progress = { sawDelta: false };
+    for (;;) {
+      const system = await this.stageSystemPrompt(turn);
+      try {
+        const result = yield* this.streamOnce(
+          request,
+          turn,
+          system.session,
+          progress,
+        );
+        this.keepTurn(request, turn, result);
+        return result;
+      } catch (err) {
+        // Text that already reached the caller cannot be taken back.
+        const refused = !progress.sawDelta && isRefusedResume(err, request);
+        if (!turn?.resume || !refused) throw err;
+        turn = restartCliSessionTurn(turn, randomUUID);
+      } finally {
+        await system.cleanup();
+      }
+    }
+  }
+
+  private async *streamOnce(
+    request: CompletionRequest,
+    turn: CliSessionTurn | null,
+    session: CliArgsInput["session"],
+    progress: { sawDelta: boolean },
+  ): AsyncGenerator<StreamChunk, CompletionResult, void> {
+    const args = this.descriptor.streamArgs(
+      this.argsInput(request, undefined, session),
+    );
+    const lines = this.streamCli(this.runOptions(args, request, turn));
     let final: string | null = null;
-    let sawDelta = false;
     let rateLimits: readonly RateLimitWindow[] | undefined;
 
     for await (const line of lines) {
       const event = this.descriptor.parseStreamEvent(line);
       if (event.kind === "delta") {
-        sawDelta = true;
+        progress.sawDelta = true;
         yield { delta: event.text, reasoningDelta: "", done: false };
       } else if (event.kind === "final") {
         final = event.raw;
@@ -214,7 +341,7 @@ export class SubscriptionCliProvider implements LlmProvider {
     // Safety net for a stream schema we do not control: if no delta was
     // recognised, emit the authoritative text once so a mismatch
     // degrades to buffered behaviour instead of an empty turn.
-    if (!sawDelta && result.content.length > 0) {
+    if (!progress.sawDelta && result.content.length > 0) {
       yield { delta: result.content, reasoningDelta: "", done: false };
     }
     yield { delta: "", reasoningDelta: "", done: true };
@@ -261,10 +388,16 @@ export class SubscriptionCliProvider implements LlmProvider {
   }
 
   async close(): Promise<void> {
-    // Nothing to release — every invocation is its own short-lived process.
+    // Every invocation is its own short-lived process. The CLI's sessions
+    // stay on disk with the CLI; only the links to them are dropped.
+    this.sessions.clear();
   }
 
-  private argsInput(request: CompletionRequest, schemaPath?: string) {
+  private argsInput(
+    request: CompletionRequest,
+    schemaPath?: string,
+    session?: CliArgsInput["session"],
+  ): CliArgsInput {
     const delivery = this.descriptor.schemaDelivery;
     return {
       model: this.model,
@@ -277,10 +410,15 @@ export class SubscriptionCliProvider implements LlmProvider {
         ? {}
         : { maxBudgetUsd: this.maxBudgetUsd }),
       extraArgs: this.extraArgs,
+      ...(session ? { session } : {}),
     };
   }
 
-  private runOptions(args: readonly string[], request: CompletionRequest) {
+  private runOptions(
+    args: readonly string[],
+    request: CompletionRequest,
+    turn: CliSessionTurn | null,
+  ) {
     return {
       binary: this.binary,
       args,
@@ -289,7 +427,7 @@ export class SubscriptionCliProvider implements LlmProvider {
       // zone fills, and argv delivery would fail with E2BIG on exactly
       // the long sessions that matter most.
       input: this.descriptor.buildStdin(
-        request.prompt,
+        turn ? turn.input : request.prompt,
         this.descriptor.systemPrompt,
       ),
       cwd: this.cwd,
@@ -302,6 +440,17 @@ export class SubscriptionCliProvider implements LlmProvider {
       ...(request.signal ? { signal: request.signal } : {}),
     };
   }
+}
+
+/**
+ * The CLI itself turned a resumed call down (its session file is gone,
+ * or it no longer takes it): worth one more try as a new session. A
+ * cancelled call is not.
+ */
+function isRefusedResume(err: unknown, request: CompletionRequest): boolean {
+  return (
+    err instanceof SubscriptionCliInvocationError && !request.signal?.aborted
+  );
 }
 
 /**

@@ -11,6 +11,7 @@ import { buildPrompt } from "./build-prompt.js";
 import {
   resolveFusionMachineFacts,
   roundTokensPerSecond,
+  turnStableWorkerSlots,
 } from "./fusion-machine-facts.js";
 import type { CapabilitiesSummary, ToolDescriptor } from "./stable-prefix.js";
 
@@ -404,5 +405,30 @@ describe("the facts reaching the prompt", () => {
     const after = buildPrompt({ ...input, liveWorkerSlots: 5 });
     expect(after.stablePrefix).toContain("5 request slots");
     expect(after.stablePrefix).toContain("`maxWorkers` at most 5");
+  });
+});
+
+describe("turnStableWorkerSlots", () => {
+  it("keeps a count unknown at the turn's first step unknown for the turn", () => {
+    let observed: number | null = null;
+    const slots = turnStableWorkerSlots(() => observed);
+
+    expect(slots()).toBeNull();
+    // The turn's own first delegation sizes the pool.
+    observed = 2;
+    expect(slots()).toBeNull();
+    // The next turn states it.
+    expect(turnStableWorkerSlots(() => observed)()).toBe(2);
+  });
+
+  it("follows a count that was already known", () => {
+    let observed: number | null = 2;
+    const slots = turnStableWorkerSlots(() => observed);
+
+    expect(slots()).toBe(2);
+    observed = 4;
+    expect(slots()).toBe(4);
+    observed = null;
+    expect(slots()).toBeNull();
   });
 });

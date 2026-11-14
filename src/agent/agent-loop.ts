@@ -53,6 +53,7 @@ import { ProfileClipWarnings, reportProfileClip } from "./profile-clip-warning.j
 import { HistoryTrimWarnings, reportHistoryTrim } from "./history-trim-warning.js";
 import { toolDisabledEvents } from "./tool-disabled-notice.js";
 import { CompactPromptLatch } from "../prompt/compact-prompt.js";
+import { turnStableWorkerSlots } from "../prompt/fusion-machine-facts.js";
 
 /**
  * What the user reads when the step loop ran out before the model
@@ -150,6 +151,9 @@ export class AgentLoop {
     const { fusionOrchestratorTurn, toolRole, claimEvidence, linkEvidence, progressNotes, unknownTools } = policies;
     let { fusionState, reviewStall, replan } = policies;
     const turn = createTurnLoopState();
+    const liveWorkerSlots = this.deps.liveWorkerSlots
+      ? turnStableWorkerSlots(this.deps.liveWorkerSlots)
+      : undefined;
     // ATO-1417: tools a provider left out of this turn's requests (the
     // server refused their schema), each said once per turn.
     const announcedDroppedTools = new Set<string>();
@@ -535,9 +539,7 @@ export class AgentLoop {
             // per-slot `n_ctx` packed a 128k model to 16k.
             profileWindowApplies:
               contextSlice?.isLlamaServer ?? this.localBackendActive(),
-            ...(this.deps.liveWorkerSlots
-              ? { liveWorkerSlots: this.deps.liveWorkerSlots }
-              : {}),
+            ...(liveWorkerSlots ? { liveWorkerSlots } : {}),
             toolTransport: contextSlice?.toolTransport ?? effectiveTransport,
             ...(options.modelModePolicy ? {
               modelModePolicy: options.modelModePolicy,

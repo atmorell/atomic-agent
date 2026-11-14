@@ -157,7 +157,9 @@ export interface AgentLoopDependencies {
    * sized the pool. Read per step; it reaches the `### fusion` machine
    * facts for an external llama-server whose `--parallel` the config
    * cannot state. Moves once — when the pool is first observed — and the
-   * prefix moves with it, the same cost as a config write.
+   * prefix moves with it, the same cost as a config write. A count first
+   * observed inside a turn is stated from the next turn on
+   * (`turnStableWorkerSlots`).
    */
   liveWorkerSlots?: () => number | null;
   /**

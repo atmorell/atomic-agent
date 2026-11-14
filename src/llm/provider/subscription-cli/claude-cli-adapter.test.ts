@@ -62,6 +62,37 @@ describe("claudeCliAdapter argv", () => {
     ).toEqual(["--system-prompt", "SYSTEM"]);
   });
 
+  it("names a session on its first call and resumes it on the next", () => {
+    const session = { id: "sid", resume: false, systemPromptFile: "/t/system.txt" };
+    for (const build of [
+      claudeCliAdapter.completeArgs,
+      claudeCliAdapter.streamArgs,
+    ]) {
+      const first = build({ ...input, session });
+      const next = build({ ...input, session: { ...session, resume: true } });
+      const at = first.indexOf("--system-prompt-file");
+
+      expect(first.slice(at, at + 4)).toEqual([
+        "--system-prompt-file",
+        "/t/system.txt",
+        "--session-id",
+        "sid",
+      ]);
+      expect(next.slice(at, at + 4)).toEqual([
+        "--system-prompt-file",
+        "/t/system.txt",
+        "--resume",
+        "sid",
+      ]);
+      // The history is what the next call reads back from the cache, and
+      // the system text is far too long for argv.
+      expect(first).not.toContain("--no-session-persistence");
+      expect(first).not.toContain("--system-prompt");
+      expect(first.slice(first.indexOf("--tools"), first.indexOf("--tools") + 2)).toEqual(["--tools", ""]);
+      expect(first).toContain("--strict-mcp-config");
+    }
+  });
+
   it("never passes flags that would defeat subscription auth or the approval ladder", () => {
     for (const build of [
       claudeCliAdapter.completeArgs,

@@ -43,8 +43,14 @@ function baseArgs(input: CliArgsInput): string[] {
     "--input-format",
     "text",
     ...(input.model ? ["--model", input.model] : []),
-    "--system-prompt",
-    input.systemPrompt,
+    ...(input.session
+      ? [
+          "--system-prompt-file",
+          input.session.systemPromptFile,
+          input.session.resume ? "--resume" : "--session-id",
+          input.session.id,
+        ]
+      : ["--system-prompt", input.systemPrompt]),
     // Safety-critical, not an optimisation: Claude Code's built-in
     // Bash/Edit/Write would otherwise run on the user's machine outside
     // atomic-agent's approval ladder.
@@ -53,10 +59,11 @@ function baseArgs(input: CliArgsInput): string[] {
     // No --mcp-config is passed, so this drops the user's MCP servers
     // rather than inheriting them into a stateless completion.
     "--strict-mcp-config",
-    // atomic-agent owns session state and re-sends the whole prompt each
-    // step; CLI-side history would double-count context and litter the
-    // user's session list.
-    "--no-session-persistence",
+    // atomic-agent owns session state. A stateless call re-sends the
+    // whole prompt, so CLI-side history would double-count context. A
+    // session call sends only what is new and needs that history: it is
+    // what the provider's prompt cache reads back (`cli-session-chain`).
+    ...(input.session ? [] : ["--no-session-persistence"]),
   ];
 }
 
@@ -250,6 +257,7 @@ export const claudeCliAdapter: CliAdapterDescriptor = {
   defaultBinary: "claude",
   defaultChatModel: CLAUDE_CLI_DEFAULT_CHAT_MODEL,
   systemPrompt: CLAUDE_CLI_SYSTEM_PROMPT,
+  resumesSessions: true,
   staticModels: CLAUDE_CLI_CHAT_MODELS,
   contextWindow: CLAUDE_CLI_CONTEXT_WINDOW,
   schemaDelivery: "inline",
