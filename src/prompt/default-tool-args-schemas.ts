@@ -661,6 +661,9 @@ const DEFAULT_TOOL_ARGS_SCHEMAS: ReadonlyMap<string, Schema> = new Map<
               instructions: stringSchema,
               deliverable: stringSchema,
               files: { ...stringArraySchema, maxItems: 32 },
+              // The planner's own time estimate. The descriptor documents
+              // it and the prompt asks for it, so the schema admits it.
+              etaSeconds: numberSchema,
               // Per-task budgets. No upper bound here: the runner
               // clamps them to a multiple of the configured default and
               // says so in the result, because a number too big is the

@@ -27,6 +27,23 @@ describe("default tool argsJsonSchema map", () => {
     expect(missing).toEqual([]);
   });
 
+  it("admits the etaSeconds the fusion.delegate descriptor documents", () => {
+    const schema = getDefaultArgsJsonSchema("fusion.delegate") as {
+      properties: {
+        tasks: {
+          items: {
+            properties: Record<string, unknown>;
+            additionalProperties: boolean;
+          };
+        };
+      };
+    };
+    const task = schema.properties.tasks.items;
+    // Closed object: a field missing here fails the whole call.
+    expect(task.additionalProperties).toBe(false);
+    expect(task.properties.etaSeconds).toEqual({ type: "number" });
+  });
+
   it("pins os.shell.run schema shape (four forms, nothing required, args is string[])", () => {
     // `{cmd, args}` runs a command; `{wait}`, `{kill}`, `{jobs}` act on a
     // job the default timeout detached (F47). Nothing can be required at
