@@ -297,14 +297,23 @@ function parseRoot(
   try {
     return { parsed: JSON.parse(root.jsonText), kind: root.kind };
   } catch (error) {
-    const fixed = repair.enabled ? repairJsonText(root.jsonText) : null;
-    if (fixed === null) {
+    // The span scan drops a run whose closer does not match, so the root
+    // it found may be a later bracket run in trailing text: also try the
+    // body from its first opener.
+    const fixed = repair.enabled
+      ? (repairJsonText(root.jsonText) ??
+        repairJsonText(body.slice(body.search(/[[{]/))))
+      : null;
+    if (fixed === null || fixed.value === null || typeof fixed.value !== "object") {
       throw new ToolCallParseError(
         `invalid tool-call JSON: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
     repair.report = mergeJsonRepair(repair.report, fixed);
-    return { parsed: fixed.value, kind: root.kind };
+    return {
+      parsed: fixed.value,
+      kind: Array.isArray(fixed.value) ? "array" : "object",
+    };
   }
 }
 

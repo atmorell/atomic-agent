@@ -11,10 +11,14 @@
  * - a single-quoted string becomes a double-quoted one;
  * - a raw newline, carriage return or tab inside a string is escaped;
  * - a comma right before a closing bracket is removed;
+ * - one closer the model skipped is put back when the closer that did
+ *   arrive is the next one out (`[{"a":{"b":1}]`);
+ * - text after the root value has closed is ignored;
  * - at the very end, an open string is closed and open brackets are
  *   closed in order.
  *
- * Anything else (a closer that does not match its opener, a key with no
+ * Anything else (a closer that matches neither of the two innermost
+ * openers, a key with no
  * value or a bare number at the end, text that still does not parse)
  * returns `null`, and the caller keeps its original parse error.
  *
@@ -46,6 +50,7 @@ export const JSON_FIX = {
   trailingComma: "trailing comma",
   unclosedString: "unclosed string",
   unclosedBrackets: "unclosed brackets",
+  skippedCloser: "skipped closing bracket",
 } as const;
 
 const FENCE_OPEN = /^```[A-Za-z0-9_-]*[ \t]*\r?\n?/;
@@ -108,9 +113,17 @@ export function repairJsonText(input: string): JsonRepairResult | null {
       continue;
     }
     if (ch === "}" || ch === "]") {
-      if (stack.pop() !== ch) return null;
+      let expected = stack.pop();
       out = dropTrailingComma(out, fixes);
+      if (expected !== ch && expected !== undefined && stack.at(-1) === ch) {
+        out += expected;
+        fixes.add(JSON_FIX.skippedCloser);
+        expected = stack.pop();
+      }
+      if (expected !== ch) return null;
       out += ch;
+      // The root closed: what follows is not part of the value.
+      if (stack.length === 0) break;
       continue;
     }
     out += ch;
@@ -133,7 +146,8 @@ export function repairJsonText(input: string): JsonRepairResult | null {
     while (stack.length > 0) out += stack.pop();
     fixes.add(JSON_FIX.unclosedBrackets);
   }
-  const closedBrackets = fixes.has(JSON_FIX.unclosedBrackets);
+  const closedBrackets =
+    fixes.has(JSON_FIX.unclosedBrackets) || fixes.has(JSON_FIX.skippedCloser);
 
   if (fixes.size === 0) return null;
   let value: unknown;
