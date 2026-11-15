@@ -294,6 +294,16 @@ export function registerBuiltInProviderKinds(): void {
       ...(options.maxBudgetUsd === undefined
         ? {}
         : { maxBudgetUsd: options.maxBudgetUsd }),
+      ...(options.cutAfterToolCalls
+        ? { cutAfterToolCalls: options.cutAfterToolCalls }
+        : {}),
+      ...(options.answerEndHint ? { answerEndHint: options.answerEndHint } : {}),
+      ...(options.stripReasoningOpener
+        ? { stripReasoningOpener: options.stripReasoningOpener }
+        : {}),
+      ...(options.resumeAcrossRepair
+        ? { resumeAcrossRepair: options.resumeAcrossRepair }
+        : {}),
       ...(entry.requestTimeoutMs
         ? { requestTimeoutMs: entry.requestTimeoutMs }
         : {}),

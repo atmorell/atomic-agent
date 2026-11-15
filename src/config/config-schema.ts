@@ -524,6 +524,10 @@ export interface AtomicAgentConfig {
         extraArgs?: string[];
         streaming?: boolean;
         maxBudgetUsd?: number;
+        cutAfterToolCalls?: boolean;
+        answerEndHint?: boolean;
+        stripReasoningOpener?: boolean;
+        resumeAcrossRepair?: boolean;
       };
       userModels?: ReadonlyArray<{
         id: string;

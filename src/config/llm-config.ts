@@ -39,7 +39,25 @@ export type UserSubscriptionCliOptions = {
   streaming?: boolean;
   /** Passed through as the CLI's own spend ceiling where it has one. */
   maxBudgetUsd?: number;
+  /**
+   * Stop a streamed answer at the end of its opening tool-call array
+   * instead of letting the model keep writing the transcript. Default off.
+   */
+  cutAfterToolCalls?: boolean;
+  /** Tell the model where its answer ends (CLI system prompt). Default off. */
+  answerEndHint?: boolean;
+  /** Send the prompt without its trailing `<think>` opener. Default off. */
+  stripReasoningOpener?: boolean;
+  /** Keep a parse repair inside the CLI's resumed session. Default off. */
+  resumeAcrossRepair?: boolean;
 };
+
+const SUBSCRIPTION_CLI_FLAGS = [
+  "cutAfterToolCalls",
+  "answerEndHint",
+  "stripReasoningOpener",
+  "resumeAcrossRepair",
+] as const;
 
 export type UserLlmProviderEntry = {
   id: string;
@@ -479,6 +497,14 @@ function parseSubscriptionCliOptions(
       );
     }
     out.maxBudgetUsd = obj.maxBudgetUsd;
+  }
+  for (const flag of SUBSCRIPTION_CLI_FLAGS) {
+    const value = obj[flag];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "boolean") {
+      throw new ConfigValidationError(`${field}.${flag}`, "expected boolean");
+    }
+    out[flag] = value;
   }
   return out;
 }

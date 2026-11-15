@@ -11,14 +11,17 @@ import {
 } from "../registry/provider-types.js";
 import { registerBuiltInProviderKinds } from "../registry/register-built-in-providers.js";
 import {
+  CLAUDE_CLI_ANSWER_END_HINT,
   CLAUDE_CLI_SYSTEM_PROMPT,
   claudeCliAdapter,
 } from "./claude-cli-adapter.js";
+import { REPEAT_NOTICE } from "./cli-session-chain.js";
 import {
   runCliCommand,
   type CliRunOptions,
   type CliRunOutcome,
 } from "./run-cli-completion.js";
+import { streamCliCommand } from "./stream-cli-completion.js";
 import { SubscriptionCliProvider } from "./subscription-cli-provider.js";
 import {
   SubscriptionCliInvocationError,
@@ -436,6 +439,160 @@ describe("SubscriptionCliProvider CLI session", () => {
     expect(after(seen[3], "--resume")).toBe(after(seen[2], "--session-id"));
     expect(seen[3]?.input).toBe(`${RESULT_LINE}${TAIL}`);
   });
+
+  describe("answer-shape flags", () => {
+    const START = JSON.stringify({
+      type: "stream_event",
+      event: {
+        type: "message_start",
+        message: {
+          usage: {
+            input_tokens: 4,
+            cache_creation_input_tokens: 812,
+            cache_read_input_tokens: 9082,
+          },
+        },
+      },
+    });
+    const delta = (text: string) =>
+      JSON.stringify({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          delta: { type: "text_delta", text },
+        },
+      });
+    const INVENTED = "\n\ntool_result[fs.read] (ok): made up\nuser: next";
+
+    /** A streaming CLI that answers ANSWER and then keeps on writing. */
+    function chattyCli(seen: Seen[], state: { stopped: boolean }) {
+      return async function* (options: CliRunOptions) {
+        record(options, seen);
+        try {
+          yield START;
+          yield delta(ANSWER.slice(0, 10));
+          yield delta(ANSWER.slice(10));
+          yield delta(INVENTED.slice(0, 6));
+          yield delta(INVENTED.slice(6));
+          yield envelope(`${ANSWER}${INVENTED}`);
+        } finally {
+          state.stopped = true;
+        }
+      };
+    }
+    async function drain(
+      provider: SubscriptionCliProvider,
+      request: Parameters<SubscriptionCliProvider["completeStream"]>[0],
+    ) {
+      const deltas: string[] = [];
+      const iterator = provider.completeStream(request);
+      let next = await iterator.next();
+      while (!next.done) {
+        if (next.value.delta) deltas.push(next.value.delta);
+        next = await iterator.next();
+      }
+      return { result: next.value, text: deltas.join("") };
+    }
+
+    it("cuts the answer after its array and resends the call to the session", async () => {
+      const seen: Seen[] = [];
+      const state = { stopped: false };
+      const notices: string[] = [];
+      const provider = makeProvider({
+        cutAfterToolCalls: true,
+        streamCliImpl: chattyCli(seen, state),
+        onNotice: (message: string) => notices.push(message),
+      });
+      const { result, text } = await drain(provider, {
+        prompt: FIRST,
+        sessionId: "s1",
+      });
+
+      expect(state.stopped).toBe(true);
+      expect(text.trimEnd()).toBe(ANSWER);
+      expect(result.content).toBe(ANSWER);
+      expect(result.finishReason).toBe("stop");
+      expect(result.usage?.promptTokens).toBe(4 + 812 + 9082);
+      expect(result.cacheHitTokens).toBe(9082);
+      expect(result.usage?.completionTokens).toBeGreaterThan(0);
+      expect(notices.join("\n")).toMatch(/answer cut after its tool-call array/);
+
+      // The CLI keeps no turn for a stopped process, so the next call
+      // carries the call line its session never got.
+      await drain(provider, { prompt: SECOND, sessionId: "s1" });
+      expect(after(seen[1], "--resume")).toBe(after(seen[0], "--session-id"));
+      expect(seen[1]?.input).toBe(`${CALL_LINE}${RESULT_LINE}${TAIL}`);
+    });
+
+    it("lets the answer run to its end with the flag off, or for a schema call", async () => {
+      const seen: Seen[] = [];
+      const state = { stopped: false };
+      const plain = makeProvider({ streamCliImpl: chattyCli(seen, state) });
+      expect((await drain(plain, { prompt: FIRST })).result.content).toBe(
+        `${ANSWER}${INVENTED}`,
+      );
+
+      const schema = makeProvider({
+        cutAfterToolCalls: true,
+        streamCliImpl: chattyCli(seen, state),
+      });
+      const { result } = await drain(schema, {
+        prompt: FIRST,
+        responseFormat: { name: "x", schema: { type: "object" } },
+      });
+      expect(result.content).toBe(`${ANSWER}${INVENTED}`);
+    });
+
+    it("appends the answer-end hint to the CLI system prompt", async () => {
+      const seen: Seen[] = [];
+      const provider = makeProvider({
+        answerEndHint: true,
+        streaming: false,
+        runCliImpl: recordingRunner(seen),
+      });
+      await provider.complete({ prompt: FIRST, sessionId: "s1" });
+      await provider.complete({ prompt: "summarise this" });
+
+      const system = `${CLAUDE_CLI_SYSTEM_PROMPT} ${CLAUDE_CLI_ANSWER_END_HINT}`;
+      expect(seen[0]?.system).toBe(`${system}\n\n${FIXED}`);
+      expect(after(seen[1], "--system-prompt")).toBe(system);
+    });
+
+    it("sends the prompt without its reasoning opener", async () => {
+      const seen: Seen[] = [];
+      const provider = makeProvider({
+        stripReasoningOpener: true,
+        streaming: false,
+        runCliImpl: recordingRunner(seen),
+      });
+      await provider.complete({ prompt: FIRST, sessionId: "s1" });
+      await provider.complete({ prompt: SECOND, sessionId: "s1" });
+      await provider.complete({ prompt: FIRST });
+
+      expect(seen[0]?.input).toBe(`${HEAD}\n`);
+      expect(after(seen[1], "--resume")).toBe(after(seen[0], "--session-id"));
+      expect(seen[1]?.input).toBe(RESULT_LINE);
+      expect(seen[2]?.input).toBe(`${FIXED}\n\n${HEAD}\n`);
+    });
+
+    it("resumes a byte-identical re-send with a repair notice", async () => {
+      const seen: Seen[] = [];
+      const provider = makeProvider({
+        resumeAcrossRepair: true,
+        streaming: false,
+        runCliImpl: recordingRunner(seen),
+      });
+      await provider.complete({ prompt: FIRST, sessionId: "s1" });
+      await provider.complete({ prompt: FIRST, sessionId: "s1" });
+      await provider.complete({ prompt: SECOND, sessionId: "s1" });
+
+      const id = after(seen[0], "--session-id");
+      expect(after(seen[1], "--resume")).toBe(id);
+      expect(seen[1]?.input).toBe(REPEAT_NOTICE);
+      expect(after(seen[2], "--resume")).toBe(id);
+      expect(seen[2]?.input).toBe(`${RESULT_LINE}${TAIL}`);
+    });
+  });
 });
 
 describe("SubscriptionCliProvider.health", () => {
@@ -511,4 +668,67 @@ describe("registry factory", () => {
       }),
     ).toThrow(/requires a subscriptionCli block/);
   });
+});
+
+describe("SubscriptionCliProvider cutAfterToolCalls against a real child", () => {
+  /** Alive at `pid`? `process.kill(pid, 0)` only probes. */
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it("stops the CLI process once the array is complete", async () => {
+    // A scripted node child in place of the vendor CLI: it streams the
+    // array, then invents a transcript forever and never sends a result.
+    const script = `
+      const line = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+      const delta = (text) => line({ type: "stream_event", event: {
+        type: "content_block_delta", delta: { type: "text_delta", text } } });
+      line({ type: "system", subtype: "init", pid: process.pid });
+      line({ type: "stream_event", event: { type: "message_start",
+        message: { usage: { input_tokens: 3, cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 100 } } } });
+      delta('[{"tool":"fs.read",');
+      delta('"args":{"path":"a.txt"}}]');
+      setInterval(() => delta("\\nuser: and then"), 20);
+    `;
+    let pid = 0;
+    const provider = new SubscriptionCliProvider({
+      id: "claude-cli",
+      descriptor: claudeCliAdapter,
+      cwd: process.cwd(),
+      requestTimeoutMs: 30_000,
+      cutAfterToolCalls: true,
+      streamCliImpl: async function* (options: CliRunOptions) {
+        for await (const line of streamCliCommand({
+          ...options,
+          binary: process.execPath,
+          args: ["-e", script],
+        })) {
+          const init = JSON.parse(line) as { pid?: number };
+          if (init.pid) pid = init.pid;
+          yield line;
+        }
+      },
+    });
+
+    const started = Date.now();
+    const iterator = provider.completeStream({ prompt: "x" });
+    let next = await iterator.next();
+    while (!next.done) next = await iterator.next();
+
+    expect(next.value.content).toBe('[{"tool":"fs.read","args":{"path":"a.txt"}}]');
+    expect(next.value.cacheHitTokens).toBe(100);
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(pid).toBeGreaterThan(0);
+    const deadline = Date.now() + 10_000;
+    while (alive(pid) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(alive(pid)).toBe(false);
+  }, 30_000);
 });
