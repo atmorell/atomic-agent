@@ -50,8 +50,14 @@ export interface UnknownArgumentReport {
 export function findUnknownArguments(
   tool: string,
   args: Record<string, unknown>,
+  /**
+   * The schema the session advertised for `tool`, when it differs from
+   * the static one (a flag-gated argument such as `fusion.delegate`'s
+   * `verify`). Omitted: the registered default schema.
+   */
+  schema?: Record<string, unknown>,
 ): UnknownArgumentReport | null {
-  const properties = schemaProperties(tool);
+  const properties = schemaProperties(tool, schema);
   if (properties === null) return null;
   const expectedKeys = Object.keys(properties);
   const canonical = canonicalArgs(tool, args);
@@ -170,8 +176,11 @@ function describeUnknownArguments(input: {
  * there is no schema to check against: none registered (MCP tools, an
  * unregistered name), or a top level that admits other keys.
  */
-function schemaProperties(tool: string): Record<string, unknown> | null {
-  const schema = getDefaultArgsJsonSchema(tool);
+function schemaProperties(
+  tool: string,
+  override: Record<string, unknown> | undefined,
+): Record<string, unknown> | null {
+  const schema = override ?? getDefaultArgsJsonSchema(tool);
   if (schema === undefined || schema.additionalProperties !== false) {
     return null;
   }

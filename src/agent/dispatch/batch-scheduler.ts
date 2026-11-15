@@ -332,7 +332,7 @@ export async function executeBatch(
     const refusal =
       input.resourceClass === "terminal"
         ? null
-        : refuseBeforeDispatch(input.call);
+        : refuseBeforeDispatch(input.call, ctx.argsSchemaFor?.(input.call.tool));
     // Collects the approvals this call raises, whatever async context the
     // verdict arrives from (an HTTP resolve, a Telegram button). A denial
     // throws out of the tool and `invokeRegistry` turns it into an error

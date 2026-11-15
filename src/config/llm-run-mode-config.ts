@@ -169,6 +169,19 @@ export type UserLlmFusionConfig = {
    */
   autoReplan?: number;
   /**
+   * Autoverify (lever F1). On, `fusion.delegate` accepts an optional
+   * `verify` argument (the shape of `verify.run`'s arguments): after the
+   * workers finish, the delegate runs it through `verify.run`'s own
+   * dispatch path (approval, read scope, cancellation) and, while it
+   * fails, hands the bounded failure back to one local repair task and
+   * verifies again, up to `autoVerifyRounds` times. Off (default): the
+   * tool's schema and description are unchanged. Env override:
+   * `ATOMIC_AGENT_FUSION_AUTOVERIFY=1|0`.
+   */
+  autoVerify?: boolean;
+  /** Repair rounds after a failed autoverify (0..5). Default 2. */
+  autoVerifyRounds?: number;
+  /**
    * Models by role (ATO-943): each names a configured provider, the same
    * shape as `escalationProvider`. A provider entry serves one model, so
    * a role's model IS its provider entry (two cloud models = two
@@ -308,6 +321,9 @@ export const DEFAULT_FUSION_REVIEW_STALL_STEPS = 6;
 export const FUSION_REVIEW_STALL_STEPS_MAX = 1000;
 /** Upper bound on `autoReplan`: replans per task in one turn. */
 export const FUSION_AUTO_REPLAN_MAX = 5;
+/** Repair rounds after a failed autoverify: default and upper bound. */
+export const DEFAULT_FUSION_AUTOVERIFY_ROUNDS = 2;
+export const FUSION_AUTOVERIFY_ROUNDS_MAX = 5;
 /**
  * Default count caps for one fusion turn (ATO-1406). Generous on
  * purpose: an orchestrator that reviews and re-delegates runs four or
@@ -566,6 +582,20 @@ function parseFusion(
       `${field}.autoReplan`,
       0,
       FUSION_AUTO_REPLAN_MAX,
+    );
+  }
+  if (obj.autoVerify !== undefined) {
+    if (typeof obj.autoVerify !== "boolean") {
+      throw new ConfigValidationError(`${field}.autoVerify`, "expected boolean");
+    }
+    out.autoVerify = obj.autoVerify;
+  }
+  if (obj.autoVerifyRounds !== undefined) {
+    out.autoVerifyRounds = parseBoundedInt(
+      obj.autoVerifyRounds,
+      `${field}.autoVerifyRounds`,
+      0,
+      FUSION_AUTOVERIFY_ROUNDS_MAX,
     );
   }
   if (obj.isolation !== undefined && !isSetAsideString(obj.isolation, FUSION_ISOLATION_MODES, `${field}.isolation`, undefined)) {

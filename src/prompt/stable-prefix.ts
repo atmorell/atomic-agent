@@ -1,7 +1,7 @@
 import type { ToolCallTransport } from "../llm/provider/completion-types.js";
 import { COMPOSIO_GUIDANCE, isComposioActive } from "./composio-guidance.js";
 import { GITHUB_GUIDANCE, isGithubActive } from "./github-guidance.js";
-import { buildFusionGuidance, isFusionActive } from "./fusion-guidance.js";
+import { buildFusionGuidance, isAutoVerifyMounted, isFusionActive } from "./fusion-guidance.js";
 import {
   ANSWER_STYLE_HEADER,
   buildAnswerStyleGuidance,
@@ -467,7 +467,13 @@ export function buildStablePrefix(input: StablePrefixInput): string {
       ? [`### integrations`, integrationsBlock.join("\n"), ``]
       : []),
     ...(fusionActive
-      ? [`### fusion`, buildFusionGuidance(input.fusion), ``]
+      ? [
+          `### fusion`,
+          buildFusionGuidance(input.fusion, {
+            autoVerify: isAutoVerifyMounted(input.toolDescriptors),
+          }),
+          ``,
+        ]
       : []),
     `### instructions`,
     // The emission instructions are the one transport-dependent block.

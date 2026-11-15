@@ -819,6 +819,25 @@ export function getDefaultArgsJsonSchema(name: string): Schema | undefined {
   return DEFAULT_TOOL_ARGS_SCHEMAS.get(name);
 }
 
+let autoVerifyDelegateSchema: Schema | undefined;
+
+/**
+ * Autoverify (lever F1): `fusion.delegate`'s schema plus an optional
+ * `verify` whose shape is `verify.run`'s own. Only the flag-on catalog
+ * advertises it; the static map above stays the flag-off schema. One
+ * object per process, so a session's prefix bytes stay put.
+ */
+export function fusionDelegateAutoVerifyArgsJsonSchema(): Schema {
+  if (autoVerifyDelegateSchema !== undefined) return autoVerifyDelegateSchema;
+  const base = DEFAULT_TOOL_ARGS_SCHEMAS.get("fusion.delegate")!;
+  const verify = DEFAULT_TOOL_ARGS_SCHEMAS.get("verify.run")!;
+  autoVerifyDelegateSchema = {
+    ...base,
+    properties: { ...(base.properties as Record<string, Schema>), verify },
+  };
+  return autoVerifyDelegateSchema;
+}
+
 /**
  * Returns a copy of `descriptor` with `argsJsonSchema` populated when
  * a default schema is registered. Existing schemas (e.g. dynamic MCP

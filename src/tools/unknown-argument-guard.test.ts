@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { fusionDelegateAutoVerifyArgsJsonSchema } from "../prompt/default-tool-args-schemas.js";
 import { findUnknownArguments, suggestKey } from "./unknown-argument-guard.js";
 
 const NOT_RUN = "— the call was not run; re-emit it with the right keys";
@@ -148,3 +149,16 @@ describe("suggestKey", () => {
     expect(suggestKey("-", ["cmd"])).toBeNull();
   });
 });
+
+describe("findUnknownArguments with the session's schema (autoverify)", () => {
+  it("refuses `verify` on the static fusion.delegate schema and admits it on the flag-on one", () => {
+    const args = { tasks: [{ id: "t1", title: "T", instructions: "x" }], verify: { kind: "command", cmd: "pytest" } };
+    expect(findUnknownArguments("fusion.delegate", args)?.unknownKeys).toEqual(["verify"]);
+    expect(findUnknownArguments("fusion.delegate", args, fusionDelegateAutoVerifyArgsJsonSchema())).toBeNull();
+    expect(
+      findUnknownArguments("fusion.delegate", { ...args, bogus: 1 }, fusionDelegateAutoVerifyArgsJsonSchema())
+        ?.unknownKeys,
+    ).toEqual(["bogus"]);
+  });
+});
+

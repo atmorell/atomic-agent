@@ -1074,3 +1074,21 @@ export function callArgsSchemaValid(
     return false;
   }
 }
+
+/**
+ * The unknown-argument guard's schema for `tool`: the descriptor this
+ * session advertised, for a built-in tool whose descriptor carries a
+ * schema other than its static default (autoverify's `fusion.delegate`
+ * with `verify`). Every other tool gets `undefined`, so the guard keeps
+ * the static schema and an MCP tool stays exempt, as before.
+ */
+export function sessionArgsSchemaFor(
+  descriptors: readonly ToolDescriptor[],
+): (tool: string) => Record<string, unknown> | undefined {
+  return (tool) => {
+    const fixed = getDefaultArgsJsonSchema(tool);
+    if (fixed === undefined) return undefined;
+    const live = descriptors.find((d) => d.name === tool)?.argsJsonSchema;
+    return live === undefined || live === fixed ? undefined : live;
+  };
+}

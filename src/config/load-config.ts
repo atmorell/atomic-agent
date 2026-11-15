@@ -761,6 +761,28 @@ export function loadConfig(): AtomicAgentConfig {
   };
 }
 
+export const FUSION_AUTOVERIFY_ENV = "ATOMIC_AGENT_FUSION_AUTOVERIFY";
+
+/**
+ * `ATOMIC_AGENT_FUSION_AUTOVERIFY` (lever F1) wins over
+ * `llm.runMode.fusion.autoVerify` in the runtime config, the way the
+ * other env overrides do; a value that differs from the file is named
+ * once. The file itself is never rewritten.
+ */
+function withAutoVerifyEnv(
+  runMode: NonNullable<UserLlmFileConfig["runMode"]>,
+): NonNullable<UserLlmFileConfig["runMode"]> {
+  if (!readEnv(FUSION_AUTOVERIFY_ENV)) return runMode;
+  const file = runMode.fusion?.autoVerify === true;
+  const value = readBool(FUSION_AUTOVERIFY_ENV, file);
+  if (value !== file) {
+    emitConfigNoticeOnce(
+      `[atomic-agent] ${FUSION_AUTOVERIFY_ENV}=${value ? 1 : 0} overrides llm.runMode.fusion.autoVerify ${file} from config.json`,
+    );
+  }
+  return { ...runMode, fusion: { ...(runMode.fusion ?? {}), autoVerify: value } };
+}
+
 function mapUserLlmToRuntime(
   llm: UserLlmFileConfig,
 ): NonNullable<AtomicAgentConfig["llm"]> {
@@ -776,7 +798,7 @@ function mapUserLlmToRuntime(
       };
     }),
     ...(llm.fallback ? { fallback: llm.fallback } : {}),
-    ...(llm.runMode ? { runMode: llm.runMode } : {}),
+    ...(llm.runMode ? { runMode: withAutoVerifyEnv(llm.runMode) } : {}),
     // Without this `llm.openrouter.preferCacheRoutes: false` never
     // reached the provider factory, which fell back to `true`.
     ...(llm.openrouter ? { openrouter: { ...llm.openrouter } } : {}),
