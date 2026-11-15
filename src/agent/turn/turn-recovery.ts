@@ -965,6 +965,7 @@ function noAnswerAtAll(err: unknown): boolean {
  *   first-token-unreachable  10 min   `SLOTS_UNREACHABLE_BUDGET_MS`
  *   first-token-unresponsive 10 min   `SLOTS_UNREACHABLE_BUDGET_MS`
  *   first-token-stall        300 s    `requestTimeoutMs`
+ *   first-token-unclaimed     90 s    `SLOTS_UNCLAIMED_BUDGET_MS` (capped by `requestTimeoutMs`)
  *   idle                     300 s    `requestTimeoutMs`
  *   total                    300 s    `requestTimeoutMs`
  *

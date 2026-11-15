@@ -71,13 +71,17 @@ const ENV_SEED = parseIntEnv(process.env.ATOMIC_AGENT_LLAMA_SEED);
  *    hostile server from pinning a slot forever by dribbling one byte
  *    just under the idle budget.
  *  - `first-token-stall` — while waiting for the first byte, `/slots`
- *    kept answering and showed no work anywhere — every slot idle, or a
- *    slot marked processing whose task and counters never moved (see
- *    `judgeSlotProgress`), nothing changed — for a whole idle
+ *    kept answering with a slot marked processing whose task and
+ *    counters never moved (see `judgeSlotProgress`) for a whole idle
  *    budget (`requestTimeoutMs`). A busy server is queueing or
  *    evaluating; a server that is provably doing nothing is not going
  *    to answer, and waiting the full first-token budget on it is what
  *    parked a turn for half an hour. See `SLOTS_POLL_INTERVAL_MS`.
+ *  - `first-token-unclaimed` — the same watch, but every slot idle and
+ *    the table unchanged: the server accepted the request and never
+ *    gave it to a slot. Its budget is `SLOTS_UNCLAIMED_BUDGET_MS`
+ *    (capped by `requestTimeoutMs`), because picking a request up runs
+ *    on the loop that answers `/slots` and shows within seconds.
  *  - `first-token-unreachable` — while waiting for the first byte,
  *    every `/slots` poll for `SLOTS_UNREACHABLE_BUDGET_MS` failed to
  *    reach a listening socket at all (connection refused, host or name
@@ -102,6 +106,7 @@ export type LlamaTimeoutKind =
   | "idle"
   | "stream-total"
   | "first-token-stall"
+  | "first-token-unclaimed"
   | "first-token-unreachable"
   | "first-token-unresponsive";
 
@@ -117,6 +122,19 @@ export type LlamaTimeoutKind =
  */
 export const SLOTS_POLL_INTERVAL_MS = 15_000;
 export const SLOTS_POLL_TIMEOUT_MS = 3_000;
+
+/**
+ * Budget for the all-idle half of the stall watch: every slot idle and
+ * the table unchanged across an unbroken run of *answered* polls. A slot
+ * picks a request up on the loop that answers `/slots`, so a request
+ * being picked up makes the poll hang or the table change; the worst
+ * select-to-launch gap measured with an 8 GiB prompt cache was 11 s.
+ * Capped by `requestTimeoutMs`. A processing slot with frozen counters
+ * keeps the full idle budget: a false positive there kills a queued
+ * worker, and the supervisor's wedge watch already restarts that daemon.
+ * A worker frozen this way on 13-11-2026 waited 300 s before failing.
+ */
+export const SLOTS_UNCLAIMED_BUDGET_MS = 90_000;
 
 /**
  * Deadline for the unary requests this client makes *outside* a
@@ -234,7 +252,12 @@ export function slotsPollFailure(err: unknown): "refused" | "unanswered" {
 /** What one `/slots` poll said about progress. */
 export type SlotProgressVerdict =
   | { kind: "progress"; snapshot: string }
-  | { kind: "idle"; snapshot: string }
+  /**
+   * Nothing moved since the last answer. `all-idle`: no slot processing,
+   * so nothing has the request (`first-token-unclaimed`). `frozen`: a
+   * processing slot whose counters stood still (`first-token-stall`).
+   */
+  | { kind: "idle"; cause: "all-idle" | "frozen"; snapshot: string }
   /**
    * The server answered, but the answer carries no verdict — an error
    * status, or a body that is not a slot table. It is alive; only the
@@ -334,13 +357,16 @@ export function judgeSlotProgress(
       return { kind: "progress", snapshot };
     }
     // Processing, counters reported, and not one of them moved.
-    return { kind: "idle", snapshot };
+    return { kind: "idle", cause: "frozen", snapshot };
   }
+  // A table with no slots in it (a router or proxy in front of a model
+  // that is loading) says nothing about whether the request is served.
+  if (parts.length === 0) return { kind: "unknown" };
   // A first answer with nothing processing is a baseline, not evidence
   // of work: the stall clock keeps running from the send, so a server
-  // that was idle from the start is caught after one idle budget.
+  // that was idle from the start is caught after one unclaimed budget.
   if (moved) return { kind: "progress", snapshot };
-  return { kind: "idle", snapshot };
+  return { kind: "idle", cause: "all-idle", snapshot };
 }
 
 /**
@@ -726,6 +752,15 @@ export class LlamaServerClient {
    */
   private unreachableBudgetMs(): number {
     return Math.max(SLOTS_UNREACHABLE_BUDGET_MS, this.requestTimeoutMs);
+  }
+
+  /**
+   * The all-idle budget in force, never longer than the idle budget. Unlike
+   * the refused budget, a raised `requestTimeoutMs` does not stretch it:
+   * a slow machine is slow while a slot works, and here no slot is working.
+   */
+  private unclaimedBudgetMs(): number {
+    return Math.min(SLOTS_UNCLAIMED_BUDGET_MS, this.requestTimeoutMs);
   }
 
   measuredTokensPerSecond(): number | null {
@@ -1342,8 +1377,9 @@ export class LlamaServerClient {
    *
    * A first-token wait also runs the `/slots` progress watch (`watch`):
    * a third timer that polls every `slotsPollIntervalMs` and fires
-   * `first-token-stall` when the server keeps answering and shows no
-   * work anywhere for a whole idle budget, or
+   * `first-token-stall` when the server keeps answering with a frozen
+   * processing slot for a whole idle budget, `first-token-unclaimed` when
+   * it keeps answering with every slot idle for the unclaimed budget, or
    * `first-token-unreachable` when it stops answering the poll
    * altogether for `unreachableBudgetMs()`. It stops at the first byte,
    * and never starts on a server whose `/slots` is known absent.
@@ -1550,8 +1586,16 @@ export class LlamaServerClient {
       refusedPolls = 0;
       if (verdict.kind !== "unknown") previousSnapshot = verdict.snapshot;
       if (verdict.kind === "idle") {
-        if (now - lastProgressAt >= this.requestTimeoutMs) {
-          expired = "first-token-stall";
+        const unclaimed = verdict.cause === "all-idle";
+        if (now - lastProgressAt >= (unclaimed ? this.unclaimedBudgetMs() : this.requestTimeoutMs)) {
+          expired = unclaimed ? "first-token-unclaimed" : "first-token-stall";
+          // The table that ended the wait, so the next incident says
+          // which slot did what (13-11-2026's could not be told apart).
+          this.logger?.debug("llama stream: first-token watch gave up", {
+            deadline: expired,
+            slotId: watch?.slotId ?? -1,
+            slots: verdict.snapshot,
+          });
           stopWatch();
           controller.abort();
           return;
@@ -1700,11 +1744,24 @@ export class LlamaServerClient {
         { cause: err },
       );
     }
+    if (timedOut === "first-token-unclaimed") {
+      return new LlamaServerError(
+        `llama-server sent no first token and showed no progress for ${this.unclaimedBudgetMs()}ms — ` +
+          `/slots kept answering with every slot idle and nothing changing, so the server accepted this request ` +
+          `and never gave it to a slot (a server that is loading, queueing or evaluating stops answering /slots ` +
+          `or shows a slot working); check the server, then retry — the retry reuses this session's slot`,
+        null,
+        url,
+        true,
+        undefined,
+        { cause: err },
+      );
+    }
     if (timedOut === "first-token-stall") {
       return new LlamaServerError(
         `llama-server sent no first token and showed no progress for ${this.requestTimeoutMs}ms — ` +
-          `/slots kept answering with nothing moving — every slot idle, or a slot marked processing whose task ` +
-          `and counters never changed — so this request is not being processed (a busy server shows its ` +
+          `/slots kept answering with a slot marked processing whose task and counters never changed, ` +
+          `so this request is not being processed (a busy server shows its ` +
           `counters moving or stops answering /slots); ` +
           `check the server, then retry — the retry reuses this session's slot`,
         null,

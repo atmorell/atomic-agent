@@ -1810,6 +1810,110 @@ describe("LlamaServerClient.completeStream deadlines", () => {
       opened().close();
     });
 
+    describe("every slot idle is unclaimed after 90 s, not a full idle budget (16-11-2026)", () => {
+      // A fusion worker on 13-11-2026 sat 300 s on a server whose /slots
+      // kept answering with nothing moving. Nothing has the request when
+      // every slot is idle, and picking one up shows within seconds.
+      const pending = (client: LlamaServerClient) => {
+        const state = { settled: false };
+        const failure = client
+          .completeStream({ prompt: "p", sessionId: "s", slotId: 0 })
+          .next()
+          .catch((err: unknown) => err)
+          .finally(() => {
+            state.settled = true;
+          });
+        return { state, failure };
+      };
+
+      it("ends an all-idle wait at 90 s when the idle budget is 300 s", async () => {
+        vi.useFakeTimers();
+        const { client } = streamingClient(300_000, {
+          firstTokenTimeoutMs: 30 * 60_000,
+          slots: slotsJson([idle(0), idle(1)]),
+        });
+        const { state, failure } = pending(client);
+        await vi.advanceTimersByTimeAsync(89_000);
+        expect(state.settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(2_000);
+        const err = (await failure) as LlamaServerError;
+        expect(err).toBeInstanceOf(LlamaServerError);
+        expect(err.timedOut).toBe(true);
+        expect(err.message).toContain("no progress for 90000ms");
+        expect(err.message).toContain("every slot idle");
+        expect(err.message).toContain("reuses this session's slot");
+      });
+
+      it("keeps the full idle budget for a frozen processing slot", async () => {
+        vi.useFakeTimers();
+        const { client } = streamingClient(300_000, {
+          firstTokenTimeoutMs: 30 * 60_000,
+          slots: slotsJson([frozen(0), idle(1)]),
+        });
+        const { state, failure } = pending(client);
+        // Baseline at 15 s, so a full idle budget of the same table ends at 315 s.
+        await vi.advanceTimersByTimeAsync(310_000);
+        expect(state.settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(10_000);
+        const err = (await failure) as LlamaServerError;
+        expect(err.timedOut).toBe(true);
+        expect(err.message).toContain("no progress for 300000ms");
+        expect(err.message).toContain("never changed");
+        expect(err.message).not.toContain("every slot idle");
+      });
+
+      it("restarts the 90 s when the idle table changes", async () => {
+        vi.useFakeTimers();
+        let tick = 0;
+        const { client } = streamingClient(300_000, {
+          firstTokenTimeoutMs: 30 * 60_000,
+          slots: async () => {
+            tick += 1;
+            // Polls at 15..60 s: unchanged; from 75 s a finished task changed slot 1.
+            const table = tick <= 4 ? [idle(0), idle(1)] : [idle(0), { ...idle(1), id_task: 42 }];
+            return new Response(JSON.stringify(table), { status: 200 });
+          },
+        });
+        const { state, failure } = pending(client);
+        await vi.advanceTimersByTimeAsync(160_000);
+        expect(state.settled).toBe(false);
+        // 75 s + 90 s: the unchanged run since the change is a full unclaimed budget.
+        await vi.advanceTimersByTimeAsync(10_000);
+        const err = (await failure) as LlamaServerError;
+        expect(err.message).toContain("no progress for 90000ms");
+      });
+
+      it("does not abort when a slot starts working before 90 s", async () => {
+        vi.useFakeTimers();
+        let tick = 0;
+        const { client, opened } = streamingClient(300_000, {
+          firstTokenTimeoutMs: 30 * 60_000,
+          slots: async () => {
+            tick += 1;
+            const table = tick <= 5 ? [idle(0), idle(1)] : [busy(0, tick), idle(1)];
+            return new Response(JSON.stringify(table), { status: 200 });
+          },
+        });
+        const first = client.completeStream({ prompt: "p", sessionId: "s", slotId: 0 }).next();
+        await vi.advanceTimersByTimeAsync(4 * 60_000);
+        opened().push('data: {"content":"x","stop":false}\n\n');
+        expect((await first).done).toBe(false);
+        opened().close();
+      });
+
+      it("never cuts below a shorter idle budget", async () => {
+        vi.useFakeTimers();
+        const { client } = streamingClient(30_000, {
+          firstTokenTimeoutMs: 30 * 60_000,
+          slots: slotsJson([idle(0), idle(1)]),
+        });
+        const { failure } = pending(client);
+        await vi.advanceTimersByTimeAsync(31_000);
+        const err = (await failure) as LlamaServerError;
+        expect(err.message).toContain("no progress for 30000ms");
+      });
+    });
+
     it("sends one /slots poll per tick for every watch waiting on the same server", async () => {
       // Two requests waiting for their first token on one client. Each
       // used to send its own poll; the second now joins the first's.
@@ -2383,6 +2487,18 @@ describe("judgeSlotProgress", () => {
   it("has no verdict on a body that is not a slot table", () => {
     expect(judgeSlotProgress({ error: "no" }, 0, null).kind).toBe("unknown");
     expect(judgeSlotProgress("x", -1, null).kind).toBe("unknown");
+    // A router or proxy front lists no slots while its model loads.
+    expect(judgeSlotProgress([], 0, null).kind).toBe("unknown");
+    expect(judgeSlotProgress([], 0, "").kind).toBe("unknown");
+  });
+
+  it("names why nothing moved: every slot idle, or a processing slot frozen", () => {
+    const first = judgeSlotProgress([idle(0), idle(1)], 0, null);
+    expect(first).toMatchObject({ kind: "idle", cause: "all-idle" });
+    const stuck = { id: 0, id_task: 5, is_processing: true, n_prompt_tokens_processed: 10, next_token: { n_decoded: 3 } };
+    const base = judgeSlotProgress([stuck, idle(1)], 1, null);
+    const again = judgeSlotProgress([stuck, idle(1)], 1, (base as { snapshot: string }).snapshot);
+    expect(again).toMatchObject({ kind: "idle", cause: "frozen" });
   });
 
   it("reads a processing slot whose counters did not move as idle", () => {
