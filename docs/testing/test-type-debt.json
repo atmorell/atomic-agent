@@ -48,6 +48,7 @@
     "src/agent/agent-loop-pause-digest.test.ts",
     "src/agent/agent-loop-profile-clip.test.ts",
     "src/agent/agent-loop-progress-note.test.ts",
+    "src/agent/agent-loop-question-escalation.test.ts",
     "src/agent/agent-loop-recalled-memory-allowlist.test.ts",
     "src/agent/agent-loop-reflection-fire-safety.test.ts",
     "src/agent/agent-loop-request-deadline.test.ts",
@@ -116,6 +117,8 @@
     "src/agent/policies/link-evidence.ts",
     "src/agent/policies/plan-mode.test.ts",
     "src/agent/policies/plan-mode.ts",
+    "src/agent/policies/question-escalation.test.ts",
+    "src/agent/policies/question-escalation.ts",
     "src/agent/policies/step-tool-set.test.ts",
     "src/agent/policies/step-tool-set.ts",
     "src/agent/policies/unknown-tool.test.ts",
@@ -186,6 +189,7 @@
     "src/agent/step/step-json-repair.ts",
     "src/agent/step/step-parsing.test.ts",
     "src/agent/step/step-parsing.ts",
+    "src/agent/step/step-question-gate.ts",
     "src/agent/step/step-reasoning.test.ts",
     "src/agent/step/step-reasoning.ts",
     "src/agent/step/step-unknown-tools.test.ts",
@@ -1679,8 +1683,11 @@
     "src/runtime/compaction-reply-budget.ts",
     "src/runtime/compaction-rolling.test.ts",
     "src/runtime/compaction-rolling.ts",
+    "src/runtime/composition/fusion-aux-route.test.ts",
+    "src/runtime/composition/fusion-aux-route.ts",
     "src/runtime/composition/llm-failure-context.test.ts",
     "src/runtime/composition/llm-failure-context.ts",
+    "src/runtime/composition/question-escalation-consult.ts",
     "src/runtime/composition/runtime-channels.test.ts",
     "src/runtime/composition/runtime-channels.ts",
     "src/runtime/composition/runtime-goal.test.ts",
@@ -2038,6 +2045,8 @@
     "src/tools/fusion/replaced-inputs.ts",
     "src/tools/fusion/replan.test.ts",
     "src/tools/fusion/replan.ts",
+    "src/tools/fusion/request-names.test.ts",
+    "src/tools/fusion/request-names.ts",
     "src/tools/fusion/role-models.test.ts",
     "src/tools/fusion/role-models.ts",
     "src/tools/fusion/run-checkpoint.test.ts",
@@ -3521,38 +3530,6 @@
       "count": 4
     },
     {
-      "path": "src/agent/fusion-orchestrator-mode.test.ts",
-      "code": 2345,
-      "message": "Argument of type '{ get: (n: string) => { readonly: boolean; }; has: (n: string) => boolean; }' is not assignable to parameter of type 'Pick<ToolRegistry, \"get\" | \"has\">'.   The types returned by 'get(...)' are incompatible between these types.     Type '{ readonly: boolean; }' is missing the following properties from type 'ToolDefinition': name, description, run",
-      "anchor": "registry",
-      "line": 103,
-      "count": 2
-    },
-    {
-      "path": "src/agent/fusion-orchestrator-mode.test.ts",
-      "code": 2345,
-      "message": "Argument of type '{ get: (n: string) => { readonly: boolean; }; has: (n: string) => boolean; }' is not assignable to parameter of type 'Pick<ToolRegistry, \"get\" | \"has\">'.   The types returned by 'get(...)' are incompatible between these types.     Type '{ readonly: boolean; }' is missing the following properties from type 'ToolDefinition': name, description, run",
-      "anchor": "REGISTRY",
-      "line": 69,
-      "count": 13
-    },
-    {
-      "path": "src/agent/fusion-orchestrator-mode.test.ts",
-      "code": 2345,
-      "message": "Argument of type '{ registry: { get: (n: string) => { readonly: boolean; }; has: (n: string) => boolean; }; }' is not assignable to parameter of type 'FusionGateContext'.   The types returned by 'registry.get(...)' are incompatible between these types.     Type '{ readonly: boolean; }' is missing the following properties from type 'ToolDefinition': name, description, run",
-      "anchor": "ctx",
-      "line": 314,
-      "count": 9
-    },
-    {
-      "path": "src/agent/fusion-orchestrator-mode.test.ts",
-      "code": 2345,
-      "message": "Argument of type '{ registry: { get: (n: string) => { readonly: boolean; }; has: (n: string) => boolean; }; }' is not assignable to parameter of type 'FusionGateContext'.   The types returned by 'registry.get(...)' are incompatible between these types.     Type '{ readonly: boolean; }' is missing the following properties from type 'ToolDefinition': name, description, run",
-      "anchor": "CTX",
-      "line": 265,
-      "count": 3
-    },
-    {
       "path": "src/agent/parallel-tool-calls.integration.test.ts",
       "code": 2345,
       "message": "Argument of type '{ registry: ToolRegistry; slotManager: SlotManager; llmComplete: () => Promise<{ content: string; reasoningContent: string; stop: true; truncated: false; timing: { promptMs: number; predictedMs: number; promptTokens: number; predictedTokens: number; }; cacheHitTokens: number; slotId: number; modelId: string; }>; gra...' is not assignable to parameter of type 'StepDependencies'.   Type '{ registry: ToolRegistry; slotManager: SlotManager; llmComplete: () => Promise<{ content: string; reasoningContent: string; stop: true; truncated: false; timing: { promptMs: number; predictedMs: number; promptTokens: number; predictedTokens: number; }; cacheHitTokens: number; slotId: number; modelId: string; }>; gra...' is missing the following properties from type 'StepDependencies': toolTransport, toolCallAdapter, supportsSlotAffinity",
@@ -4501,7 +4478,7 @@
       "code": 2349,
       "message": "This expression is not callable.   Type 'never' has no call signatures.",
       "anchor": "resolveA",
-      "line": 480,
+      "line": 503,
       "count": 1
     },
     {
@@ -4509,7 +4486,7 @@
       "code": 2349,
       "message": "This expression is not callable.   Type 'never' has no call signatures.",
       "anchor": "resolveB",
-      "line": 481,
+      "line": 504,
       "count": 2
     },
     {
@@ -4517,7 +4494,7 @@
       "code": 2349,
       "message": "This expression is not callable.   Type 'never' has no call signatures.",
       "anchor": "resolveSecond",
-      "line": 432,
+      "line": 455,
       "count": 1
     },
     {

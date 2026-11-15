@@ -34,17 +34,19 @@ const verifyRunReadonly = buildVerifyRunTool({
   },
 }).readonly;
 
-/** The two facts the gate reads off a tool: does it exist, does it mutate. */
-function registryWith(tools: Record<string, { readonly: boolean }>): {
-  get: (n: string) => { readonly: boolean };
-  has: (n: string) => boolean;
-} {
+/**
+ * The two facts the gate reads off a tool: does it exist, does it mutate.
+ * Typed as the gate's own parameter; the rest of a definition is never read.
+ */
+function registryWith(
+  tools: Record<string, { readonly: boolean }>,
+): Parameters<typeof checkFusionOrchestrator>[1] {
   return {
     has: (name) => name in tools,
     get: (name) => {
       const tool = tools[name];
       if (!tool) throw new Error(`unknown tool ${name}`);
-      return tool;
+      return tool as unknown as ReturnType<Parameters<typeof checkFusionOrchestrator>[1]["get"]>;
     },
   };
 }
@@ -61,7 +63,7 @@ const REGISTRY = registryWith({
 
 const BEFORE = emptyFusionOrchestratorState();
 /** One fan-out done, however it went. */
-const AFTER = { delegations: 1 };
+const AFTER = { ...emptyFusionOrchestratorState(), delegations: 1 };
 
 describe("the fusion orchestrator gate", () => {
   it("lets the orchestrator read while it is still planning", () => {
