@@ -101,3 +101,27 @@ export function resolveFanoutScope(
   dirs.push(workingDir);
   return collapseScope(dirs);
 }
+
+/**
+ * The folder a worker should run in when the orchestrator's own
+ * working directory is outside everything the fan-out authorised, or
+ * `undefined` to keep the working directory.
+ *
+ * The case is a session started in the home directory (the desktop
+ * app's default): `collapseScope` drops home as too broad, so the scope
+ * is the project the tasks name, and a worker left in home ran every
+ * `os.shell.run` without a `cwd` there — outside its scope, refused,
+ * unable to run a single test. With exactly one authorised root that
+ * root is the honest place to work; with several there is no single
+ * answer, so the working directory stays and the model names `cwd`.
+ */
+export function workerHomeFor(
+  workingDir: string,
+  writeScope: readonly string[],
+): string | undefined {
+  if (writeScope.length !== 1) return undefined;
+  const root = writeScope[0]!;
+  if (!isAbsolute(root)) return undefined;
+  if (isInside(root, resolve(workingDir))) return undefined;
+  return root;
+}

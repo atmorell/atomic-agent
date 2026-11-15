@@ -22,6 +22,8 @@ import {
 } from "./escalation.js";
 import type { WorkerPricing } from "./worker-result.js";
 import { resolveContractInputs } from "./contract-inputs.js";
+import { workerHomeFor } from "./fanout-paths.js";
+import { resolveUserPath } from "../os/expand-home.js";
 import {
   applyDeclaredFileReport,
   applyNoChangesRule,
@@ -710,14 +712,27 @@ export async function runWorkerTasks(
 async function runOneTask(
   deps: WorkerRunnerDeps,
   options: RunWorkerTasksOptions,
-  task: DelegateTask,
+  delegated: DelegateTask,
 ): Promise<WorkerTaskResult> {
   const startedAt = Date.now();
   const collector = new WorkerRunCollector();
   // Branch isolation (ATO-946): the task's own workspace stands in for
   // the working directory everywhere below. Without it, nothing changes.
-  const isolated = options.taskWorkspace?.(task.id);
-  const workingDir = isolated?.workingDir ?? deps.workingDir;
+  const isolated = options.taskWorkspace?.(delegated.id);
+  // A parent working directory outside the whole fan-out scope (a
+  // session started in home) would leave the worker running every
+  // command where it may not: it works in the one authorised root
+  // instead (`workerHomeFor`). The task's paths were written against
+  // the parent's directory, so they are made absolute first and keep
+  // meaning what the orchestrator meant.
+  const rebasedHome =
+    isolated === undefined
+      ? workerHomeFor(deps.workingDir, options.writeScope ?? [])
+      : undefined;
+  const pathBase = rebasedHome === undefined ? undefined : deps.workingDir;
+  const task =
+    pathBase === undefined ? delegated : withAbsoluteFiles(delegated, pathBase);
+  const workingDir = isolated?.workingDir ?? rebasedHome ?? deps.workingDir;
   // The worker always runs in this folder (the parent's, in every model
   // mode, #1121); only an isolated or cloud worker inherits a workspace.
   const inheritWorkspace = isolated !== undefined || deps.inheritWorkspace === true;
@@ -918,7 +933,9 @@ async function runOneTask(
       reasonFor: workerRefusalFor,
       // A throwaway worktree is still the parent's project: its saved
       // rules hold here too.
-      ...(isolated !== undefined ? { ruleWorkdir: deps.workingDir } : {}),
+      ...(isolated !== undefined || rebasedHome !== undefined
+        ? { ruleWorkdir: deps.workingDir }
+        : {}),
     });
     // …and the half that lets it work at all. The operator answered one
     // question at the fan-out naming these directories; inside them this
@@ -938,7 +955,7 @@ async function runOneTask(
     // says, with no `overwrite` exemption — the orchestrator redeclares.
     const inputs = resolveContractInputs(
       options.contract?.inputs ?? [],
-      workingDir,
+      pathBase ?? workingDir,
     );
     if (inputs.length > 0) deps.declaredInputs?.declare(id, inputs);
   };
@@ -1936,4 +1953,21 @@ function isAbortError(error: unknown): boolean {
     error instanceof Error &&
     (error.name === "AbortError" || error.name === "TimeoutError")
   );
+}
+
+/** `task` with every `files` entry resolved against `base`. */
+function withAbsoluteFiles(task: DelegateTask, base: string): DelegateTask {
+  if (task.files === undefined || task.files.length === 0) return task;
+  return {
+    ...task,
+    files: task.files.map((file) => {
+      try {
+        return resolveUserPath(file, base);
+      } catch {
+        // A path that cannot be resolved here stays as written: the
+        // worker reports it rather than the fan-out failing.
+        return file;
+      }
+    }),
+  };
 }

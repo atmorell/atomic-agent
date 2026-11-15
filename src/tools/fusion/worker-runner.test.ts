@@ -529,6 +529,71 @@ describe("runWorkerTasks", () => {
     expect(results.map((r) => r.status)).toEqual(["failed", "ok"]);
   });
 
+  it("runs the worker in the one authorised root when the parent works outside it", async () => {
+    // The desktop app starts a session in home; the fan-out scope drops
+    // home as too broad, so a worker left there ran every command
+    // outside its scope and had each refused.
+    const home = join(tmpdir(), "worker-home-parent");
+    const repo = join(tmpdir(), "worker-home-repo");
+    const { deps, calls } = harness(async () => turnResult());
+    const dirs: Array<string | undefined> = [];
+    const granted: string[][] = [];
+    const make = deps.createEphemeralSession;
+    deps.createEphemeralSession = (meta, workingDir, inherit) => {
+      dirs.push(workingDir);
+      return make(meta, workingDir, inherit);
+    };
+    deps.workingDir = home;
+    deps.approvals = {
+      ...deps.approvals,
+      fanoutScopes: {
+        grant: (_id: string, scope: readonly string[]) => granted.push([...scope]),
+        clear: () => {},
+      },
+    } as unknown as WorkerRunnerDeps["approvals"];
+    await runWorkerTasks(deps, {
+      ...BASE,
+      tasks: [
+        {
+          id: "t0",
+          title: "Fix",
+          instructions: "Fix it",
+          files: [join(repo, "a.mjs"), "worker-home-repo/b.mjs"],
+        },
+      ],
+      maxWorkers: 1,
+      writeScope: [repo],
+      signal: new AbortController().signal,
+    });
+    expect(dirs).toEqual([repo]);
+    expect(granted).toEqual([[repo]]);
+    expect(calls[0]!.userMessage).toContain(`inside ${repo}`);
+    // A relative path keeps meaning what the orchestrator wrote.
+    expect(calls[0]!.userMessage).toContain(join(home, "worker-home-repo", "b.mjs"));
+  });
+
+  it("keeps the parent's directory when it is inside the scope or the scope has several roots", async () => {
+    const repo = join(tmpdir(), "worker-home-repo");
+    for (const writeScope of [[repo], [repo, join(tmpdir(), "other")]]) {
+      const { deps } = harness(async () => turnResult());
+      const dirs: Array<string | undefined> = [];
+      const make = deps.createEphemeralSession;
+      deps.createEphemeralSession = (meta, workingDir, inherit) => {
+        dirs.push(workingDir);
+        return make(meta, workingDir, inherit);
+      };
+      deps.workingDir = writeScope.length === 1 ? join(repo, "sub") : tmpdir();
+      await runWorkerTasks(deps, {
+        ...BASE,
+        tasks: tasks(1),
+        maxWorkers: 1,
+        writeScope,
+        signal: new AbortController().signal,
+      });
+      expect(dirs).toEqual([deps.workingDir]);
+    }
+  });
+
   it("quotes the parent turn's original request in every worker's brief", async () => {
     const { deps, calls } = harness(async () => turnResult());
     await runWorkerTasks(deps, {

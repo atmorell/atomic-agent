@@ -1,7 +1,9 @@
 import { homedir } from "node:os";
 import { describe, expect, it } from "vitest";
 
-import { collapseScope, resolveFanoutScope } from "./fanout-paths.js";
+import { join } from "node:path";
+
+import { collapseScope, resolveFanoutScope, workerHomeFor } from "./fanout-paths.js";
 import type { DelegateTask } from "./delegate-args.js";
 
 function task(patch: Partial<DelegateTask> = {}): DelegateTask {
@@ -96,5 +98,26 @@ describe("collapseScope", () => {
     // the home directory are not scopes, they are the absence of one.
     expect(collapseScope(["/"])).toEqual([]);
     expect(collapseScope([homedir()])).toEqual([]);
+  });
+});
+
+describe("workerHomeFor", () => {
+  const home = homedir();
+  const repo = join(home, "Code", "proj");
+
+  it("moves a worker from home into the one root a home session's scope keeps", () => {
+    const scope = resolveFanoutScope([task({ files: [join(repo, "a.js")] })], home);
+    expect(scope).toEqual([repo]);
+    expect(workerHomeFor(home, scope)).toBe(repo);
+  });
+
+  it("keeps the working directory when it is inside the scope", () => {
+    expect(workerHomeFor(join(repo, "sub"), [repo])).toBeUndefined();
+    expect(workerHomeFor(repo, [repo])).toBeUndefined();
+  });
+
+  it("keeps the working directory when there is no single root to pick", () => {
+    expect(workerHomeFor(home, [])).toBeUndefined();
+    expect(workerHomeFor(home, [repo, join(home, "other")])).toBeUndefined();
   });
 });
