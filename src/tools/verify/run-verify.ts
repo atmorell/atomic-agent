@@ -7,7 +7,8 @@
  * `summary` with failures first. `ok` means the run itself went well
  * AND every check passed; a check that fails to parse fails the run.
  */
-import { resolve, relative, isAbsolute } from "node:path";
+import { realpath } from "node:fs/promises";
+import { resolve, relative, isAbsolute, sep } from "node:path";
 
 import { getConfig, type AtomicAgentConfig } from "../../config/index.js";
 import type { ProbeSample } from "./page-probe-script.js";
@@ -58,12 +59,49 @@ export interface VerifyRunContext {
   readonly workspace?: (workingDir: string) => Promise<VerifyWorkspace>;
 }
 
-/** `cwd` relative to the copy, refused when it escapes it. */
-function resolveRunCwd(root: string, cwd: string | undefined): string {
+/** `target` relative to `base` when it is `base` or inside it; `undefined` when it escapes. */
+function insidePath(base: string, target: string): string | undefined {
+  const rel = relative(base, target);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined;
+  return rel;
+}
+
+async function realPathOrUndefined(path: string): Promise<string | undefined> {
+  try {
+    return await realpath(path);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Where an absolute `cwd` lies in the working directory, or `undefined`.
+ * The model only knows the original path, so the working directory
+ * itself or a folder in it names the same place in the copy. Compared
+ * lexically first (`path.relative` ignores case on Windows), then by
+ * real path, so a junction, symlink or 8.3 alias of the working
+ * directory counts too.
+ */
+async function insideWorkingDir(workingDir: string, cwd: string): Promise<string | undefined> {
+  const lexical = insidePath(resolve(workingDir), resolve(cwd));
+  if (lexical !== undefined) return lexical;
+  const [realDir, realCwd] = await Promise.all([realPathOrUndefined(workingDir), realPathOrUndefined(cwd)]);
+  return realDir === undefined || realCwd === undefined ? undefined : insidePath(realDir, realCwd);
+}
+
+/**
+ * `cwd` inside the run's copy (`root`). Relative paths are taken from
+ * the copy; an absolute path in the original working directory maps to
+ * the same place in the copy. Anything that escapes is refused.
+ */
+async function resolveRunCwd(root: string, workingDir: string, cwd: string | undefined): Promise<string> {
   if (cwd === undefined) return root;
+  if (isAbsolute(cwd)) {
+    const rel = await insideWorkingDir(workingDir, cwd);
+    if (rel !== undefined) return resolve(root, rel);
+  }
   const target = resolve(root, cwd);
-  const rel = relative(root, target);
-  if (rel.startsWith("..") || isAbsolute(rel)) {
+  if (insidePath(root, target) === undefined) {
     throw new Error(`verify.run: \`cwd\` must stay inside the working directory (got ${cwd})`);
   }
   return target;
@@ -79,12 +117,12 @@ function finish(
   // A run that did not happen (no browser, a server that never came up,
   // a command that could not start) evaluates nothing: `no errors` over
   // an empty error list would be the fake pass this tool exists to
-  // refuse.
+  // refuse. The error itself is said once, on the outcome line.
   const checks =
     specs === undefined || specs.length === 0
       ? undefined
       : base.error !== undefined
-        ? specs.map((check) => ({ check, ok: false, detail: `not evaluated: ${base.error}` }))
+        ? specs.map((check) => ({ check, ok: false, detail: "not evaluated" }))
         : evaluateChecks(specs, subject);
   const ok = runOk && (checks?.every((c) => c.ok) ?? true);
   const withoutSummary = { ...base, ok, durationMs: Date.now() - started, ...(checks === undefined ? {} : { checks }) };
@@ -92,7 +130,7 @@ function finish(
 }
 
 async function runInWorkspace(args: VerifyRunArgs, dir: string, isolated: boolean, ctx: VerifyRunContext, started: number): Promise<VerifyRunResult> {
-  const cwd = resolveRunCwd(dir, args.cwd);
+  const cwd = await resolveRunCwd(dir, ctx.workingDir, args.cwd);
   const common = { kind: args.kind, isolated };
   if (args.kind === "command") {
     const out = await runCommandKind(args, { cwd, signal: ctx.signal });

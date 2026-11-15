@@ -1,8 +1,8 @@
-import { existsSync } from "node:fs";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join, sep } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { AtomicAgentConfig } from "../../config/index.js";
@@ -177,10 +177,109 @@ describe("runVerify — command", () => {
     expect(out.error).toContain("`cwd`");
   });
 
+  it("says a refused cwd once, not once per check", async () => {
+    const out = await runVerify(
+      { kind: "command", cmd: NODE, args: ["-v"], cwd: "../..", checks: ["exit 0", "stdout contains v"] },
+      ctx(),
+    );
+    expect(out.checks?.map((c) => c.detail)).toEqual(["not evaluated", "not evaluated"]);
+    expect(out.summary.split("must stay inside the working directory").length - 1).toBe(1);
+  });
+
   it("names the invalid argument", async () => {
     await expect(runVerify({ kind: "command" }, ctx())).rejects.toThrow("`cmd` must be a non-empty string");
     await expect(runVerify({ kind: "dance" }, ctx())).rejects.toThrow("`kind`");
     await expect(runVerify({ kind: "page" }, ctx())).rejects.toThrow("exactly one of `path` or `url`");
+  });
+});
+
+describe("runVerify — cwd", () => {
+  // The copy is a fixed folder here so the test can see where the
+  // command ran; `sub` exists in both the original and the copy.
+  let copy: string;
+  let outside: string;
+  const PRINT_CWD = ["-e", "process.stdout.write(process.cwd())"];
+
+  beforeEach(async () => {
+    copy = await mkdtemp(join(tmpdir(), "atag-verify-copy-"));
+    outside = await mkdtemp(join(tmpdir(), "atag-verify-outside-"));
+    await mkdir(join(work, "sub"));
+    await mkdir(join(copy, "sub"));
+  });
+
+  afterEach(async () => {
+    await rm(copy, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  function inCopy(): Partial<VerifyRunContext> {
+    return { workspace: async () => ({ dir: copy, isolated: true, method: "copy", cleanup: async () => {} }) };
+  }
+
+  async function ranIn(cwd: string): Promise<string> {
+    const out = await runVerify({ kind: "command", cmd: NODE, args: PRINT_CWD, cwd, checks: ["exit 0"] }, ctx(inCopy()));
+    expect(out.error).toBeUndefined();
+    expect(out.ok).toBe(true);
+    return realpathSync.native(out.stdoutTail ?? "");
+  }
+
+  async function refused(cwd: string): Promise<void> {
+    const out = await runVerify({ kind: "command", cmd: NODE, args: PRINT_CWD, cwd }, ctx(inCopy()));
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe(`verify.run: \`cwd\` must stay inside the working directory (got ${cwd})`);
+  }
+
+  it("maps the working directory itself onto the copy", async () => {
+    expect(await ranIn(work)).toBe(realpathSync.native(copy));
+  });
+
+  it("maps a folder in the working directory onto the same folder in the copy", async () => {
+    expect(await ranIn(join(work, "sub"))).toBe(realpathSync.native(join(copy, "sub")));
+  });
+
+  it("takes a relative cwd from the copy", async () => {
+    expect(await ranIn("sub")).toBe(realpathSync.native(join(copy, "sub")));
+    expect(await ranIn(".")).toBe(realpathSync.native(copy));
+  });
+
+  it("refuses an absolute path outside the working directory", async () => {
+    await refused(outside);
+    // A sibling whose name starts with the working directory's is still outside.
+    await refused(`${work}-x`);
+  });
+
+  it("resolves `..` before deciding", async () => {
+    expect(await ranIn(join(work, "sub", ".."))).toBe(realpathSync.native(copy));
+    expect(await ranIn(`${work}${sep}..${sep}${basename(work)}${sep}sub`)).toBe(realpathSync.native(join(copy, "sub")));
+    await refused(`${work}${sep}sub${sep}..${sep}..`);
+    await refused(`..${sep}..`);
+    await refused(`sub${sep}..${sep}..`);
+  });
+
+  it("follows a junction or symlink to the working directory, and refuses one that leads outside", async () => {
+    const toWork = join(outside, "to-work");
+    const toOutside = join(outside, "to-elsewhere");
+    await mkdir(join(outside, "elsewhere"));
+    // "junction" needs no privilege on Windows; elsewhere it is a dir symlink.
+    await symlink(work, toWork, "junction");
+    await symlink(join(outside, "elsewhere"), toOutside, "junction");
+    expect(await ranIn(toWork)).toBe(realpathSync.native(copy));
+    expect(await ranIn(join(toWork, "sub"))).toBe(realpathSync.native(join(copy, "sub")));
+    await refused(toOutside);
+  });
+
+  it.runIf(process.platform === "win32")("ignores the case of the drive letter and the path on Windows", async () => {
+    const flipped = work[0] === work[0]!.toUpperCase() ? work[0]!.toLowerCase() + work.slice(1) : work[0]!.toUpperCase() + work.slice(1);
+    expect(await ranIn(flipped)).toBe(realpathSync.native(copy));
+    expect(await ranIn(join(work.toUpperCase(), "SUB"))).toBe(realpathSync.native(join(copy, "sub")));
+  });
+
+  it("maps onto the working directory itself when the run is not isolated", async () => {
+    const out = await runVerify(
+      { kind: "command", cmd: NODE, args: PRINT_CWD, cwd: join(work, "sub") },
+      ctx({ workspace: async () => ({ dir: work, isolated: false, method: "in-place", cleanup: async () => {} }) }),
+    );
+    expect(realpathSync.native(out.stdoutTail ?? "")).toBe(realpathSync.native(join(work, "sub")));
   });
 });
 
@@ -246,8 +345,34 @@ describe("runVerify — page", () => {
     expect(out.ok).toBe(false);
     expect(out.error).toBe("no browser available: none found");
     // `no errors` over a page that never opened must not pass.
-    expect(out.checks?.[0]).toMatchObject({ ok: false, detail: "not evaluated: no browser available: none found" });
+    expect(out.checks?.[0]).toMatchObject({ ok: false, detail: "not evaluated" });
     expect(out.summary).toContain("no browser available");
+  });
+
+  it("says the error once, however many checks it left unevaluated", async () => {
+    await writeFile(join(work, "index.html"), "<html><body>hi</body></html>");
+    const launch: BrowserLauncher = async () => {
+      throw new Error("no browser available: none found");
+    };
+    const out = await runVerify(
+      { kind: "page", path: "index.html", checks: ["no errors", "no console errors", "selector body"] },
+      ctx({ launchBrowser: launch }),
+    );
+    expect(out.checks?.map((c) => [c.ok, c.detail])).toEqual([
+      [false, "not evaluated"],
+      [false, "not evaluated"],
+      [false, "not evaluated"],
+    ]);
+    expect(out.summary.split("no browser available: none found").length - 1).toBe(1);
+    expect(out.summary).toBe(
+      [
+        "verify.run page: FAILED",
+        "FAIL check `no errors` — not evaluated",
+        "FAIL check `no console errors` — not evaluated",
+        "FAIL check `selector body` — not evaluated",
+        "no browser available: none found",
+      ].join("\n"),
+    );
   });
 
   it("fails on a missing file before launching anything", async () => {

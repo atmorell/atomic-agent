@@ -1,4 +1,8 @@
+import { createHash } from "node:crypto";
+
 import { getConfig } from "../config/index.js";
+import type { MemoryIndexEntry } from "../memory/memory-store.js";
+import type { CloudContext, CloudContextEntry } from "../session/cloud-context.js";
 import { PROFILE_SECTION_CAPTION, selectProfileFacts, renderProfileLine } from "../memory/profile-renderer.js";
 import { renderMemoryIndexSection } from "../memory/notes-renderer.js";
 import { renderLessonsSection } from "../memory/lessons/lessons-renderer.js";
@@ -38,7 +42,7 @@ export function cloudContextSections(input: BuildPromptInput): Map<string, strin
   // Preserve note formatting and the complete content, including its last paragraph.
   if (state.recalledNotes?.length) add("recalled", state.recalledNotes.map((note) =>
     `#${note.id} [${note.tags.join(", ")}]\n${note.content}`).join("\n\n"));
-  if (state.memoryIndex?.length) add("memory-index", renderMemoryIndexSection(state.memoryIndex));
+  if (state.memoryIndex?.length) add("memory-index", stickyMemoryIndex(state.cloudContext, state.memoryIndex));
   add("lessons", renderLessonsSection(state.recalledLessons ?? []));
   add("procedures", renderProceduresSection(state.recalledProcedures ?? []));
   add("task-policy", renderTaskPolicy({ turns: state.turns, userMessage: input.userMessage })?.body);
@@ -46,4 +50,37 @@ export function cloudContextSections(input: BuildPromptInput): Map<string, strin
   add("notice", input.transientNotice);
   add("current-date", input.currentDate);
   return sections;
+}
+
+const RECALLED_HEADER = /^#(\d+) \[[^\]\n]*\]$/gm;
+const INDEX_ROW = /^- #(\d+)(?= |$)/gm;
+
+/**
+ * The `### memory-index` body for the cloud journal. The journal is
+ * append-only, so a changed body is a new message — and recall runs
+ * again after every step, so each note it moves in or out of
+ * `### recalled` shifted the index, which then went out again in full
+ * (2.5-6.8k chars per fusion task). The index only points at notes the
+ * conversation can fetch by id; the one already sent is kept until the
+ * index lists a note newer than every note the conversation has listed
+ * or recalled, i.e. one written since.
+ */
+export function stickyMemoryIndex(journal: CloudContext | undefined, index: readonly MemoryIndexEntry[]): string {
+  const fresh = renderMemoryIndexSection(index);
+  const entries = journal?.entries ?? [];
+  let sent: CloudContextEntry | undefined;
+  for (const entry of entries) if (entry.key === "memory-index") sent = entry;
+  if (sent === undefined || sent.active !== true || sent.turn.kind !== "user") return fresh;
+  let newestShown = -1;
+  for (const entry of entries) {
+    if (entry.turn.kind !== "user" || (entry.key !== "memory-index" && entry.key !== "recalled")) continue;
+    for (const match of entry.turn.text.matchAll(entry.key === "recalled" ? RECALLED_HEADER : INDEX_ROW)) {
+      newestShown = Math.max(newestShown, Number(match[1]));
+    }
+  }
+  if (index.some((note) => note.id > newestShown)) return fresh;
+  // The body as sent: after the `### key` and `Context update …` lines.
+  const text = sent.turn.text;
+  const body = text.slice(text.indexOf("\n", text.indexOf("\n") + 1) + 1);
+  return createHash("sha256").update(body).digest("hex") === sent.digest ? body : fresh;
 }

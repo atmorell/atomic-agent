@@ -35,7 +35,7 @@ export interface VerifyProbe {
 
 export interface VerifyRunArgs {
   readonly kind: VerifyRunKind;
-  /** Relative to the throwaway copy. */
+  /** Relative to the throwaway copy, or an absolute path in the working directory (mapped onto the copy). */
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly timeoutMs: number;

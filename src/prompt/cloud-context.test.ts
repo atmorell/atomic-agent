@@ -12,6 +12,7 @@ import { getConfig } from "../config/index.js";
 import { readContextLengthFromRejection } from "../llm/reliability/request-size-rejection.js";
 import { isNativeShapeRejection } from "../llm/provider/openai/openai-native-messages.js";
 import { PROFILE_SECTION_CAPTION } from "../memory/profile-renderer.js";
+import type { MemoryEntry, MemoryIndexEntry } from "../memory/memory-store.js";
 
 const mode = { mode: "cloud" as const, source: "provider" as const, providerId: "remote", modelId: "large" };
 function fixture(): BuildPromptInput {
@@ -128,6 +129,62 @@ describe("cloud message retention", () => {
       keywords: [], supersedes: null, supersededBy: null, voteScore: 0 }];
     expect(buildPrompt(input).text).toContain(`${PROFILE_SECTION_CAPTION}\n- hobby_builder: true`);
     expect(buildPrompt({ ...input, profileFacts: [] }).text).not.toContain(PROFILE_SECTION_CAPTION);
+  });
+
+  it("sends the memory index once while recall only moves known notes in and out of it (F6)", () => {
+    const note = (id: number): MemoryEntry => ({ id, content: `note ${id} body`, createdAt: id, updatedAt: id, source: "agent",
+      sessionId: null, workingDir: null, tags: ["reflection"], recallCount: 0, lastRecalledAt: null });
+    const row = (id: number): MemoryIndexEntry => ({ id, preview: `note ${id}`, tags: ["reflection"], updatedAt: id, workingDir: null, sessionId: null });
+    const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+    // Journal entries only: the stable prefix also names the section.
+    const indexCount = (text: string) => text.split("### memory-index\nContext update").length - 1;
+    const input = fixture();
+    const step = () => {
+      const built = buildPrompt(input);
+      input.session.cloudContext = built.cloudContext;
+      return built;
+    };
+    // Turn start, as in the traces: three recalled, the next twenty in the index.
+    input.session.recalledNotes = [note(34), note(33), note(12)];
+    input.session.memoryIndex = range(13, 32).map(row);
+    const first = step();
+    expect(indexCount(first.text)).toBe(1);
+    // After a step, recall comes back empty: its notes slide into the index, the oldest drop out.
+    input.session.turns.push(assistantToolCallTurn({ tool: "fusion.delegate", args: {}, at: 2 }), toolResultTurn({ tool: "fusion.delegate", status: "ok", summary: "1 task: 1 ok", at: 3 }));
+    input.session.recalledNotes = [];
+    input.session.memoryIndex = range(15, 34).map(row);
+    const second = step();
+    expect(indexCount(second.text)).toBe(1);
+    expect(second.text).toContain("### recalled\nContext update state:");
+    expect(second.text).toContain("(no longer active)");
+    expect(native(second).slice(0, native(first).length)).toEqual(native(first));
+    // An older note sliding in is not news either.
+    input.session.turns.push(assistantToolCallTurn({ tool: "verify.run", args: {}, at: 4 }), toolResultTurn({ tool: "verify.run", status: "ok", summary: "ok", at: 5 }));
+    input.session.memoryIndex = [row(11), ...range(13, 31).map(row)];
+    const third = step();
+    expect(indexCount(third.text)).toBe(1);
+    expect(third.cloudContext?.entries).toHaveLength((second.cloudContext?.entries.length ?? 0) + 2);
+    // Restored from disk, the journal still keeps the index it sent.
+    expect(buildPrompt({ ...input, session: JSON.parse(JSON.stringify(input.session)) }).text).toBe(third.text);
+    // A note written since is news: the whole index goes out again.
+    input.session.turns.push(assistantReplyTurn("done", 6), userTurn("next", 7));
+    input.session.memoryIndex = range(16, 35).map(row);
+    const fourth = step();
+    expect(indexCount(fourth.text)).toBe(2);
+    expect(fourth.text).toMatch(/### memory-index\nContext update state:\d+; supersedes state:\d+\.\n- #16 \[reflection\] note 16\n[\s\S]*- #35 \[reflection\] note 35/);
+  });
+
+  it("sends the memory index again after it was dropped", () => {
+    const row = (id: number): MemoryIndexEntry => ({ id, preview: `note ${id}`, tags: [], updatedAt: id, workingDir: null, sessionId: null });
+    const input = fixture();
+    input.session.memoryIndex = [row(1), row(2)];
+    input.session.cloudContext = buildPrompt(input).cloudContext;
+    input.session.memoryIndex = [];
+    const dropped = buildPrompt(input);
+    expect(dropped.text).toContain("(no longer active)");
+    input.session.cloudContext = dropped.cloudContext;
+    input.session.memoryIndex = [row(1)];
+    expect(buildPrompt(input).text.split("### memory-index\nContext update")).toHaveLength(4);
   });
 
   it("puts the current turn's call reasoning on the outgoing cloud turns, not in the journal (ATO-1397)", () => {
