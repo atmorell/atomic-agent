@@ -153,6 +153,12 @@ export interface ReflectionRunnerDeps {
   llmComplete: ReflectionLlmComplete;
   /** When `native_tools`, reflection uses synthetic emit_reflection. */
   toolTransport?: ToolCallTransport;
+  /**
+   * Live form of `toolTransport`, read once per reflection and preferred
+   * over it: the route a reflection rides can change after the runner is
+   * built (fusion pins memory sub-calls to the local worker leg).
+   */
+  resolveToolTransport?: () => ToolCallTransport | undefined;
   profileStore: ProfileStore;
   /**
    * Freeform `MemoryStore`. When provided together with a non-zero
@@ -383,8 +389,11 @@ export function createReflectionRunner(
         // any-speaker mode, whose keys name third parties.
         ...(deps.anySpeaker ? {} : { knownProfile: knownProfileOf(deps.profileStore) }),
       });
+      // One read per reflection: the request shape and the parse below
+      // must agree even if the route changes while the call is out.
+      const toolTransport = deps.resolveToolTransport?.() ?? deps.toolTransport;
       const completion =
-        deps.toolTransport === "native_tools"
+        toolTransport === "native_tools"
           ? await deps.llmComplete({
               ...buildCloudSubcallRequest({
                 prompt,
@@ -414,7 +423,7 @@ export function createReflectionRunner(
         return;
       }
       const rawText =
-        deps.toolTransport === "native_tools"
+        toolTransport === "native_tools"
           ? extractCloudSubcallText(completion)
           : completion.content;
       const parsed = parseReflectionOutput(rawText);

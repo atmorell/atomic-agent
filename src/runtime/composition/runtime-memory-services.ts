@@ -32,6 +32,8 @@ interface MemoryServiceDependencies extends Omit<RuntimeMemoryStores, "embedding
 /** TurnContext/recorders and provider routing remain caller-owned live callbacks. */
 export function createRuntimeMemoryServices(args: MemoryServiceDependencies & {
   toolTransport?: ToolCallTransport;
+  /** Live transport of the route memory sub-calls ride; wins over `toolTransport`. */
+  resolveToolTransport?: () => ToolCallTransport;
   touchRecorder: (sessionId: string) => TraceRecorder | undefined;
   memoryHealth: MemoryHealthAnnouncer;
 }): { reflectionRunner: ReflectionRunner | undefined; memoryContextProvider: MemoryContextProvider | undefined } {
@@ -58,6 +60,7 @@ export function createRuntimeMemoryServices(args: MemoryServiceDependencies & {
     slotManager,
     llmComplete,
     toolTransport: args.toolTransport,
+    ...(args.resolveToolTransport ? { resolveToolTransport: args.resolveToolTransport } : {}),
     profileStore,
     notesStore,
     logger,
@@ -586,6 +589,7 @@ function buildReflectionRunner(args: {
   slotManager: Pick<SlotManager, "sideCallSlotId">;
   llmComplete: (params: LlmStreamParams) => Promise<CompletionResult>;
   toolTransport?: import("../../llm/provider/completion-types.js").ToolCallTransport;
+  resolveToolTransport?: () => ToolCallTransport;
   profileStore: ProfileStore;
   /**
    * Freeform notes store. Wired only when both `memory.notes.enabled`
@@ -625,6 +629,7 @@ function buildReflectionRunner(args: {
   return createReflectionRunner({
     llmComplete: reflectionLlmComplete,
     ...(args.toolTransport ? { toolTransport: args.toolTransport } : {}),
+    ...(args.resolveToolTransport ? { resolveToolTransport: args.resolveToolTransport } : {}),
     profileStore: args.profileStore,
     ...(notesWriteEnabled ? { memoryStore: args.notesStore } : {}),
     ...(args.neighborEvolver ? { neighborEvolver: args.neighborEvolver } : {}),

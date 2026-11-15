@@ -31,6 +31,7 @@ import type { RuntimeProviders } from "./runtime-inference.js";
 import { captureModelModePolicy, resolveModelMode, type ModelModePolicy } from "../../llm/model-mode.js";
 import type { GoalSpec, GoalState } from "../../agent/goal/index.js";
 import { createRuntimeGoalRunner } from "./runtime-goal.js";
+import { fusionAuxProviderId } from "./fusion-aux-route.js";
 import { answerChannelForOrigin, type AnswerChannel } from "../../prompt/answer-style.js";
 
 export function prepareRuntimeTurnState() {
@@ -214,11 +215,15 @@ export function createRuntimeTurnService(
     // Teardown's handle on this call, dropped again below so a quit
     // after the call has settled aborts nothing.
     pendingSessionNamings.add(abort);
+    // In fusion the title rides the worker leg, not the orchestrator
+    // (`fusion-aux-route.ts`); read once so request shape and route agree.
+    const auxProviderId = fusionAuxProviderId(resolveCurrentRunMode());
     try {
       const title = await generateSessionTitle(state, {
         complete: async (params) => {
           const result = await llmComplete({
             ...params,
+            ...(auxProviderId !== undefined ? { providerId: auxProviderId } : {}),
             signal: abort.signal,
           });
           return { content: result.content, ...(result.toolCalls ? { toolCalls: result.toolCalls } : {}) };
@@ -227,7 +232,7 @@ export function createRuntimeTurnService(
         // Which wire shape this call has to take. A cloud link answers a
         // bare prompt with an empty `content`, so the title has to be
         // asked for the way every other sub-call asks.
-        toolTransport: resolveActiveLlmSlice().transport,
+        toolTransport: resolveActiveLlmSlice(auxProviderId).transport,
         serverTemplate: getConfig().localModels.useServerTemplate !== "off",
         onError: (err: unknown) =>
           logger.debug("session naming failed", {

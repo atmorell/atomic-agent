@@ -21,6 +21,7 @@ import { connectRuntimeProviders, createRuntimeModelContext, connectRuntimeFallb
 import { createRuntimeMemoryStores } from "./composition/runtime-memory-stores.js";
 import { createMemoryEmbeddingSwitch } from "./composition/runtime-memory-embedding-switch.js";
 import { createRuntimeMemoryServices, createRuntimeMemoryConsolidator } from "./composition/runtime-memory-services.js";
+import { fusionAuxProviderId, pinToFusionWorker } from "./composition/fusion-aux-route.js";
 import { createRuntimeLifecycle } from "./composition/runtime-lifecycle.js";
 import { join, resolve } from "node:path";
 
@@ -451,9 +452,14 @@ export async function createAgentRuntime(
     userRequest: (sessionId) => turnRequests.get(sessionId), logger,
   });
   const { taskStore, webhookSessionStore } = createRuntimeTaskStores({ config, logger });
+  // Memory sub-calls follow the fusion worker leg when fusion is on
+  // (`fusion-aux-route.ts`); the transport they shape for follows the same pin.
+  const auxLlmComplete = pinToFusionWorker(llmComplete, resolveCurrentRunMode);
   const { reflectionRunner, memoryContextProvider } = createRuntimeMemoryServices({
     config, profileStore, notesStore, linkStore, lessonStore, procedureStore, voteStore, embeddingClient,
-    slotManager, llmComplete, toolTransport: bootstrapLlmSlice.transport, logger, metrics, touchRecorder, memoryHealth,
+    slotManager, llmComplete: auxLlmComplete, toolTransport: bootstrapLlmSlice.transport,
+    resolveToolTransport: () => resolveActiveLlmSlice(fusionAuxProviderId(resolveCurrentRunMode())).transport,
+    logger, metrics, touchRecorder, memoryHealth,
   });
 
   const promptPreviewDeps = {
@@ -811,7 +817,7 @@ export async function createAgentRuntime(
   });
   const consolidatorJob = createRuntimeMemoryConsolidator({
     config, notesStore, linkStore, lessonStore, procedureStore, voteStore,
-    slotManager, llmComplete, logger, metrics, traceBus,
+    slotManager, llmComplete: auxLlmComplete, logger, metrics, traceBus,
   });
   consolidatorJob?.start();
 

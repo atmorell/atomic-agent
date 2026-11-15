@@ -128,6 +128,29 @@ describe("createReflectionRunner", () => {
     expect(calls).toBe(1);
   });
 
+  it("shapes each reflection for the live transport, not the boot snapshot", async () => {
+    // Fusion pins memory sub-calls to the local worker leg after boot:
+    // a cloud boot snapshot must not send a native_tools request there.
+    let live: "grammar" | "native_tools" = "grammar";
+    const seen: Array<{ grammar: string; slotId: number }> = [];
+    const runner = createReflectionRunner({
+      toolTransport: "native_tools", resolveToolTransport: () => live,
+      profileStore: h.store, reflectionSlotId: 7, timeoutMs: 5000, maxFactsPerCall: 3,
+      llmComplete: async params => {
+        seen.push({ grammar: params.grammar, slotId: params.slotId });
+        return completion(params.grammar === "" ? '{"facts":[],"notes":[]}' : "SKIP");
+      },
+    });
+    const input = { userMessage: "I prefer detailed explanations with examples.", assistantReply: "I will include examples." };
+    await runner.reflect({ sessionId: "live-1", ...input });
+    live = "native_tools";
+    await runner.reflect({ sessionId: "live-2", ...input });
+    expect(seen).toEqual([
+      { grammar: REFLECTION_GRAMMAR, slotId: 7 },
+      { grammar: "", slotId: -1 },
+    ]);
+  });
+
   it("writes parsed SET facts into the profile store and records an `ok` outcome", async () => {
     const calls: Array<{
       prompt: string;
