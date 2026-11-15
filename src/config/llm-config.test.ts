@@ -538,6 +538,37 @@ describe("llm-config", () => {
     });
   });
 
+  it("round-trips the answer-shape flags and rejects a non-boolean one", () => {
+    const flags = {
+      cutAfterToolCalls: true,
+      answerEndHint: false,
+      stripReasoningOpener: true,
+      resumeAcrossRepair: true,
+    };
+    const file = (subscriptionCli: Record<string, unknown>) => ({
+      version: USER_CONFIG_VERSION,
+      llm: {
+        activeTextProvider: "claude-cli",
+        activeEmbeddingProvider: "claude-cli",
+        toolTransport: "auto",
+        providers: [{ id: "claude-cli", kind: "subscription-cli", subscriptionCli }],
+      },
+    });
+    const parsed = parseUserConfigFile(file({ cli: "claude", ...flags }));
+    expect(parsed.llm?.providers[0]?.subscriptionCli).toEqual({
+      cli: "claude",
+      ...flags,
+    });
+    // Off unless set: an entry without them parses without them.
+    expect(
+      parseUserConfigFile(file({ cli: "claude" })).llm?.providers[0]
+        ?.subscriptionCli,
+    ).toEqual({ cli: "claude" });
+    expect(() =>
+      parseUserConfigFile(file({ cli: "claude", cutAfterToolCalls: "yes" })),
+    ).toThrow(/subscriptionCli\.cutAfterToolCalls/);
+  });
+
   it("rejects a subscription-cli entry with no subscriptionCli block", () => {
     expect(() =>
       parseUserConfigFile({

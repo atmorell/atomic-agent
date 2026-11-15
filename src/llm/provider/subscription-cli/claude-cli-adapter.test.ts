@@ -298,6 +298,33 @@ describe("claudeCliAdapter parseStreamEvent", () => {
     ).toEqual({ kind: "delta", text: "1\n2" });
   });
 
+  it("reads the prompt-side usage from message_start", () => {
+    // The shape the CLI streams (stream-json, --include-partial-messages).
+    const line = JSON.stringify({
+      type: "stream_event",
+      event: {
+        type: "message_start",
+        message: {
+          usage: {
+            input_tokens: 4,
+            cache_creation_input_tokens: 812,
+            cache_read_input_tokens: 9082,
+            output_tokens: 1,
+          },
+        },
+      },
+    });
+    expect(claudeCliAdapter.parseStreamEvent(line)).toEqual({
+      kind: "start",
+      usage: { inputTokens: 4, cacheCreationTokens: 812, cacheReadTokens: 9082 },
+    });
+    expect(
+      claudeCliAdapter.parseStreamEvent(
+        JSON.stringify({ type: "stream_event", event: { type: "message_start" } }),
+      ),
+    ).toEqual({ kind: "ignore" });
+  });
+
   it("marks the terminal result envelope", () => {
     const line = JSON.stringify({ type: "result", subtype: "success" });
     expect(claudeCliAdapter.parseStreamEvent(line)).toEqual({

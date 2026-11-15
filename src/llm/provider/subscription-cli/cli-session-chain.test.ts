@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { renderCloudTurn } from "../../../session/cloud-context.js";
 import {
   planCliSessionTurn,
+  REPEAT_NOTICE,
   restartCliSessionTurn,
   withoutOwnAnswer,
   type CliSessionLink,
@@ -165,5 +166,113 @@ describe("withoutOwnAnswer", () => {
 
   it("never sends an empty turn", () => {
     expect(withoutOwnAnswer(CALL_LINE, ANSWER)).toBe(CALL_LINE);
+  });
+});
+
+describe("planCliSessionTurn with resumeAcrossRepair", () => {
+  const LENIENT = { resumeAcrossRepair: true };
+  // `buildToolCallRepairPrompt`: the rejected prompt plus a repair
+  // section, with the opener moved past it and no trailing newline.
+  const REPAIR_SECTION =
+    "\n### tool-call-repair\nThe previous answer was not a valid tool call.\n" +
+    "### respond\nRespond now.\n";
+  const repairPrompt = (conversation: string) =>
+    `${FIXED}\n\n${conversation}${REPAIR_SECTION}<think>`;
+  const link = (
+    turn: ReturnType<typeof planCliSessionTurn>,
+    answer: string,
+  ): CliSessionLink => ({
+    id: turn!.id,
+    system: turn!.system,
+    user: turn!.user,
+    answer,
+    ...(turn!.before ? { before: turn!.before } : {}),
+  });
+
+  it("sends a repair as a side turn of the same session", () => {
+    const previous = answered(prompt(HEAD), "Reading the file first.");
+    const turn = planCliSessionTurn(
+      "BASE",
+      repairPrompt(HEAD),
+      previous,
+      ids(),
+      LENIENT,
+    );
+
+    expect(turn?.resume).toBe(true);
+    expect(turn?.id).toBe(previous.id);
+    // Only the repair is new; the shared newline stays behind.
+    expect(turn?.input).toBe(`${REPAIR_SECTION.slice(1)}<think>`);
+    expect(turn?.before).toBe(previous);
+  });
+
+  it("continues the call after a repair from the conversation before it", () => {
+    const first = answered(prompt(HEAD), "Reading the file first.");
+    const repair = planCliSessionTurn(
+      "BASE",
+      repairPrompt(HEAD),
+      first,
+      ids(),
+      LENIENT,
+    );
+    const next = planCliSessionTurn(
+      "BASE",
+      prompt(`${HEAD}\n${CALL_LINE}${RESULT_LINE}`),
+      link(repair, ANSWER),
+      ids(),
+      LENIENT,
+    );
+
+    expect(next?.resume).toBe(true);
+    expect(next?.id).toBe(first.id);
+    // The repair's answer already stands in the session.
+    expect(next?.input).toBe(`${RESULT_LINE}${TAIL}`);
+    expect(next?.before).toBeUndefined();
+  });
+
+  it("resumes an identical re-send with a short repair notice", () => {
+    const previous = answered(prompt(HEAD), "Reading the file first.");
+    const turn = planCliSessionTurn(
+      "BASE",
+      prompt(HEAD),
+      previous,
+      ids(),
+      LENIENT,
+    );
+
+    expect(turn).toEqual({
+      id: previous.id,
+      resume: true,
+      system: previous.system,
+      user: previous.user,
+      input: REPEAT_NOTICE,
+    });
+  });
+
+  it("changes nothing for a plain next call", () => {
+    const previous = answered(prompt(HEAD));
+    const next = prompt(`${HEAD}\n${CALL_LINE}${RESULT_LINE}`);
+    expect(planCliSessionTurn("BASE", next, previous, ids(), LENIENT)).toEqual(
+      planCliSessionTurn("BASE", next, previous, ids()),
+    );
+  });
+
+  it("opens new sessions for both calls without the flag", () => {
+    const first = answered(prompt(HEAD), "Reading the file first.");
+    const repair = planCliSessionTurn(
+      "BASE",
+      repairPrompt(HEAD),
+      first,
+      () => "r",
+    );
+    const next = planCliSessionTurn(
+      "BASE",
+      prompt(`${HEAD}\n${CALL_LINE}${RESULT_LINE}`),
+      link(repair, ANSWER),
+      () => "n",
+    );
+
+    expect(repair).toMatchObject({ id: "r", resume: false });
+    expect(next).toMatchObject({ id: "n", resume: false });
   });
 });

@@ -28,6 +28,19 @@ export interface CliArgsInput {
 /** One parsed line of a streaming CLI's NDJSON output. */
 export type CliStreamEvent =
   | { kind: "delta"; text: string }
+  /**
+   * The prompt side of the usage, sent before any text. Only an answer
+   * cut short (`cutAfterToolCalls`) reads it: that call never gets to its
+   * terminal envelope.
+   */
+  | {
+      kind: "start";
+      usage: {
+        inputTokens: number;
+        cacheCreationTokens: number;
+        cacheReadTokens: number;
+      };
+    }
   /** Terminal envelope — the same payload the buffered path parses. */
   | { kind: "final"; raw: string }
   /** Something worth logging but not worth failing on (rate-limit warnings). */
@@ -59,6 +72,11 @@ export interface CliAdapterDescriptor {
   readonly defaultChatModel: string;
   /** Replaces the CLI's own system prompt for the duration of a turn. */
   readonly systemPrompt: string;
+  /**
+   * Appended to `systemPrompt` under `subscriptionCli.answerEndHint`:
+   * where the answer ends. Absent: the flag changes nothing for this CLI.
+   */
+  readonly answerEndHint?: string;
   /** The argv builders honour `CliArgsInput.session`. */
   readonly resumesSessions?: boolean;
   readonly staticModels: readonly string[];

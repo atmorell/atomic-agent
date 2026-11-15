@@ -31,6 +31,18 @@ export const CLAUDE_CLI_SYSTEM_PROMPT =
   "Do not use tools; the prompt's own protocol is the only one that applies.";
 
 /**
+ * `subscriptionCli.answerEndHint`. The prompt's conversation is a
+ * plain-text transcript of `user:`/`tool_result[...]` lines, and Claude
+ * sometimes goes on writing it after its tool-call array — invented
+ * results and user turns, paid for as output and again as cache writes.
+ */
+export const CLAUDE_CLI_ANSWER_END_HINT =
+  "Your answer is one message. When it is a tool-call array, it ends at " +
+  "the array's closing bracket. The conversation in the prompt is a " +
+  "record, not a transcript to continue: never write a tool result, a " +
+  "user turn or a context update yourself.";
+
+/**
  * Above this the schema would eat into the argv budget for no benefit;
  * the sub-runners that set `responseFormat` all tolerate free-form
  * content, so dropping the flag degrades gracefully.
@@ -200,6 +212,13 @@ interface ClaudeStreamLine {
   event?: {
     type?: string;
     delta?: { type?: string; text?: string };
+    message?: {
+      usage?: {
+        input_tokens?: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+      };
+    };
   };
   rate_limit_info?: {
     status?: string;
@@ -246,6 +265,17 @@ function parseStreamEvent(line: string): CliStreamEvent {
     ) {
       return { kind: "delta", text: event.delta.text };
     }
+    const usage = event.type === "message_start" ? event.message?.usage : undefined;
+    if (usage) {
+      return {
+        kind: "start",
+        usage: {
+          inputTokens: usage.input_tokens ?? 0,
+          cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+          cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+        },
+      };
+    }
   }
   return { kind: "ignore" };
 }
@@ -257,6 +287,7 @@ export const claudeCliAdapter: CliAdapterDescriptor = {
   defaultBinary: "claude",
   defaultChatModel: CLAUDE_CLI_DEFAULT_CHAT_MODEL,
   systemPrompt: CLAUDE_CLI_SYSTEM_PROMPT,
+  answerEndHint: CLAUDE_CLI_ANSWER_END_HINT,
   resumesSessions: true,
   staticModels: CLAUDE_CLI_CHAT_MODELS,
   contextWindow: CLAUDE_CLI_CONTEXT_WINDOW,

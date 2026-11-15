@@ -20,6 +20,7 @@ import type { ToolCallAdapter } from "../adapters/tool-call-adapter.js";
 import type {
   CliAdapterDescriptor,
   CliArgsInput,
+  CliStreamEvent,
 } from "./cli-adapter-descriptor.js";
 import {
   planCliSessionTurn,
@@ -27,6 +28,8 @@ import {
   type CliSessionLink,
   type CliSessionTurn,
 } from "./cli-session-chain.js";
+import { withoutReasoningOpener } from "./strip-reasoning-opener.js";
+import { ToolCallArrayCut } from "./tool-call-array-cut.js";
 import { resolveCliBinary } from "./resolve-cli-binary.js";
 import { runCliCommand, type CliRunner } from "./run-cli-completion.js";
 import {
@@ -46,6 +49,8 @@ const HEALTH_TIMEOUT_MS = 5_000;
 const MAX_HEALTH_BYTES = 64 * 1024;
 /** Conversations whose CLI session is remembered; the oldest goes first. */
 const MAX_TRACKED_SESSIONS = 64;
+/** Output-token estimate for an answer cut short (`cutResult`). */
+const CUT_CHARS_PER_TOKEN = 2;
 
 export interface SubscriptionCliProviderOptions {
   id: string;
@@ -58,6 +63,18 @@ export interface SubscriptionCliProviderOptions {
   streaming?: boolean;
   maxBudgetUsd?: number;
   requestTimeoutMs?: number;
+  /**
+   * Stop a streamed answer at the end of its opening tool-call array
+   * (`ToolCallArrayCut`). The CLI's session then lacks that answer, so
+   * the next call sends the array's `assistant_tool_call` lines along.
+   */
+  cutAfterToolCalls?: boolean;
+  /** Append the descriptor's `answerEndHint` to the CLI system prompt. */
+  answerEndHint?: boolean;
+  /** Send the prompt without its trailing reasoning opener. */
+  stripReasoningOpener?: boolean;
+  /** Keep a parse repair inside the CLI session (`cli-session-chain`). */
+  resumeAcrossRepair?: boolean;
   onNotice?: (message: string) => void;
   /** Test seams; default to the real spawn-backed implementations. */
   runCliImpl?: CliRunner;
@@ -106,6 +123,11 @@ export class SubscriptionCliProvider implements LlmProvider {
   private readonly streamingEnabled: boolean;
   private readonly maxBudgetUsd: number | undefined;
   private readonly timeoutMs: number;
+  /** The descriptor's system prompt, with the answer-end hint when set. */
+  private readonly systemPrompt: string;
+  private readonly cutAfterToolCalls: boolean;
+  private readonly stripReasoningOpener: boolean;
+  private readonly resumeAcrossRepair: boolean;
   private readonly onNotice: ((message: string) => void) | undefined;
   private readonly runCli: CliRunner;
   private readonly streamCli: CliStreamRunner;
@@ -127,6 +149,13 @@ export class SubscriptionCliProvider implements LlmProvider {
       descriptor.streamMode === "ndjson" && options.streaming !== false;
     this.maxBudgetUsd = options.maxBudgetUsd;
     this.timeoutMs = options.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.systemPrompt =
+      options.answerEndHint === true && descriptor.answerEndHint
+        ? `${descriptor.systemPrompt} ${descriptor.answerEndHint}`
+        : descriptor.systemPrompt;
+    this.cutAfterToolCalls = options.cutAfterToolCalls === true;
+    this.stripReasoningOpener = options.stripReasoningOpener === true;
+    this.resumeAcrossRepair = options.resumeAcrossRepair === true;
     this.onNotice = options.onNotice;
     this.runCli = options.runCliImpl ?? runCliCommand;
     this.streamCli = options.streamCliImpl ?? streamCliCommand;
@@ -151,7 +180,7 @@ export class SubscriptionCliProvider implements LlmProvider {
       const system = await this.stageSystemPrompt(turn);
       try {
         const result = await this.completeOnce(request, turn, system.session);
-        this.keepTurn(request, turn, result);
+        this.keepTurn(request, turn, result.content);
         return result;
       } catch (err) {
         if (!turn?.resume || !isRefusedResume(err, request)) throw err;
@@ -191,26 +220,40 @@ export class SubscriptionCliProvider implements LlmProvider {
       return null;
     }
     const turn = planCliSessionTurn(
-      this.descriptor.systemPrompt,
-      request.prompt,
+      this.systemPrompt,
+      this.outgoingPrompt(request),
       this.sessions.get(key),
       randomUUID,
+      { resumeAcrossRepair: this.resumeAcrossRepair },
     );
     if (turn) this.sessions.delete(key);
     return turn;
   }
 
+  /** The prompt as the CLI gets it (`stripReasoningOpener`). */
+  private outgoingPrompt(request: CompletionRequest): string {
+    return this.stripReasoningOpener
+      ? withoutReasoningOpener(request.prompt)
+      : request.prompt;
+  }
+
+  /**
+   * `answer` is what the CLI's session holds as this call's reply: the
+   * result text, or nothing for an answer cut short — the CLI keeps no
+   * turn for a process stopped mid-stream.
+   */
   private keepTurn(
     request: CompletionRequest,
     turn: CliSessionTurn | null,
-    result: CompletionResult,
+    answer: string,
   ): void {
     if (!turn || !request.sessionId) return;
     this.sessions.set(request.sessionId, {
       id: turn.id,
       system: turn.system,
       user: turn.user,
-      answer: result.content,
+      answer,
+      ...(turn.before ? { before: turn.before } : {}),
     });
     if (this.sessions.size > MAX_TRACKED_SESSIONS) {
       const oldest = this.sessions.keys().next().value;
@@ -283,13 +326,13 @@ export class SubscriptionCliProvider implements LlmProvider {
     for (;;) {
       const system = await this.stageSystemPrompt(turn);
       try {
-        const result = yield* this.streamOnce(
+        const { result, cut } = yield* this.streamOnce(
           request,
           turn,
           system.session,
           progress,
         );
-        this.keepTurn(request, turn, result);
+        this.keepTurn(request, turn, cut ? "" : result.content);
         return result;
       } catch (err) {
         // Text that already reached the caller cannot be taken back.
@@ -307,19 +350,53 @@ export class SubscriptionCliProvider implements LlmProvider {
     turn: CliSessionTurn | null,
     session: CliArgsInput["session"],
     progress: { sawDelta: boolean },
-  ): AsyncGenerator<StreamChunk, CompletionResult, void> {
+  ): AsyncGenerator<
+    StreamChunk,
+    { result: CompletionResult; cut: boolean },
+    void
+  > {
     const args = this.descriptor.streamArgs(
       this.argsInput(request, undefined, session),
     );
     const lines = this.streamCli(this.runOptions(args, request, turn));
     let final: string | null = null;
     let rateLimits: readonly RateLimitWindow[] | undefined;
+    // Not for a schema call: its answer is an object, never an array.
+    const cut =
+      this.cutAfterToolCalls && !request.responseFormat
+        ? new ToolCallArrayCut()
+        : null;
+    let start: StartUsage | null = null;
+    const startedAt = Date.now();
 
     for await (const line of lines) {
       const event = this.descriptor.parseStreamEvent(line);
       if (event.kind === "delta") {
         progress.sawDelta = true;
+        const kept = cut ? cut.push(event.text) : null;
+        if (cut && kept !== null) {
+          // Leaving the loop ends the line iterator, whose `finally`
+          // stops the CLI's whole process tree.
+          if (kept.length > 0) {
+            yield { delta: kept, reasoningDelta: "", done: false };
+          }
+          this.onNotice?.(
+            `${this.descriptor.cli} answer cut after its tool-call array ` +
+              `(${cut.answer.length} of ${cut.received}+ chars kept)`,
+          );
+          const result = cutResult(
+            cut,
+            start,
+            this.model,
+            Date.now() - startedAt,
+            rateLimits,
+          );
+          yield { delta: "", reasoningDelta: "", done: true };
+          return { result, cut: true };
+        }
         yield { delta: event.text, reasoningDelta: "", done: false };
+      } else if (event.kind === "start") {
+        start = event.usage;
       } else if (event.kind === "final") {
         final = event.raw;
       } else if (event.kind === "notice") {
@@ -345,7 +422,7 @@ export class SubscriptionCliProvider implements LlmProvider {
       yield { delta: result.content, reasoningDelta: "", done: false };
     }
     yield { delta: "", reasoningDelta: "", done: true };
-    return result;
+    return { result, cut: false };
   }
 
   async describeImage(_request: VisionRequest): Promise<VisionResult> {
@@ -401,7 +478,7 @@ export class SubscriptionCliProvider implements LlmProvider {
     const delivery = this.descriptor.schemaDelivery;
     return {
       model: this.model,
-      systemPrompt: this.descriptor.systemPrompt,
+      systemPrompt: this.systemPrompt,
       ...(request.responseFormat && delivery === "inline"
         ? { responseSchema: request.responseFormat.schema }
         : {}),
@@ -427,8 +504,8 @@ export class SubscriptionCliProvider implements LlmProvider {
       // zone fills, and argv delivery would fail with E2BIG on exactly
       // the long sessions that matter most.
       input: this.descriptor.buildStdin(
-        turn ? turn.input : request.prompt,
-        this.descriptor.systemPrompt,
+        turn ? turn.input : this.outgoingPrompt(request),
+        this.systemPrompt,
       ),
       cwd: this.cwd,
       timeoutMs: this.timeoutMs,
@@ -466,4 +543,47 @@ function mergeWindows(
   const key = (w: RateLimitWindow) => `${w.scope}/${w.name}`;
   const fresh = new Set(newer.map(key));
   return [...older.filter((w) => !fresh.has(key(w))), ...newer];
+}
+
+type StartUsage = Extract<CliStreamEvent, { kind: "start" }>["usage"];
+
+/**
+ * The result of an answer stopped at its array: the CLI never sends its
+ * envelope, so the prompt side comes from the stream's start event and the
+ * output side is an estimate from the characters received (Claude's
+ * answers here run near two characters per token).
+ */
+function cutResult(
+  cut: ToolCallArrayCut,
+  start: StartUsage | null,
+  model: string,
+  predictedMs: number,
+  rateLimits: readonly RateLimitWindow[] | undefined,
+): CompletionResult {
+  const promptTokens = start
+    ? start.inputTokens + start.cacheCreationTokens + start.cacheReadTokens
+    : 0;
+  const completionTokens = Math.ceil(cut.received / CUT_CHARS_PER_TOKEN);
+  return {
+    content: cut.answer,
+    reasoningContent: "",
+    stop: true,
+    truncated: false,
+    timing: {
+      promptMs: 0,
+      predictedMs,
+      promptTokens,
+      predictedTokens: completionTokens,
+    },
+    cacheHitTokens: start?.cacheReadTokens ?? 0,
+    slotId: -1,
+    modelId: model,
+    usage: {
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
+    },
+    finishReason: "stop",
+    ...(rateLimits ? { rateLimits } : {}),
+  };
 }
