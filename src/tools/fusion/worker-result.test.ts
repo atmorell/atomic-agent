@@ -1131,6 +1131,18 @@ describe("workerFailureHint", () => {
       "llama-server accepted the connection and answered nothing for 600000ms while this request waited for its first token — neither GET /slots nor GET /health produced a reply, and /health is served without touching the inference loop, so a server that is merely busy still answers it; this daemon is listening and not serving. Restart it before retrying (waiting longer and running fewer workers will both not help)",
       WORKER_HINT_UNREACHABLE,
     ],
+    [
+      // The client's first-token-unclaimed verdict (16-11-2026). It says
+      // "no first token" too, but a server with every slot idle is not
+      // saturated — fewer workers is the wrong advice.
+      "llama-server sent no first token and showed no progress for 90000ms — /slots kept answering with every slot idle and nothing changing, so the server accepted this request and never gave it to a slot (a server that is loading, queueing or evaluating stops answering /slots or shows a slot working); check the server, then retry — the retry reuses this session's slot",
+      WORKER_HINT_IDLE_SERVER,
+    ],
+    [
+      // Its frozen-slot sibling still reads as saturation.
+      "llama-server sent no first token and showed no progress for 300000ms — /slots kept answering with a slot marked processing whose task and counters never changed, so this request is not being processed",
+      WORKER_HINT_SATURATED,
+    ],
     ["openrouter HTTP 402: Payment Required", WORKER_HINT_QUOTA],
     ["HTTP 429: Too Many Requests", WORKER_HINT_QUOTA],
     ["insufficient credits on this API key", WORKER_HINT_QUOTA],

@@ -874,6 +874,14 @@ const SERVER_SATURATED =
   /no first token|first[- ]token timeout|sent no data for \d+\s*ms|idle timeout/i;
 const SERVER_UNREACHABLE =
   /stopped answering GET \/slots|it is unreachable|accepted the connection and answered nothing/i;
+/**
+ * The client's `first-token-unclaimed` verdict: `/slots` answered the
+ * whole time with every slot idle. It also says "no first token", and
+ * saturation's "fewer parallel workers" is wrong for a server with
+ * nothing to do — the queue watchdog's same evidence gets
+ * `WORKER_HINT_IDLE_SERVER`, so this does too.
+ */
+const SERVER_IDLE_UNCLAIMED = /with every slot idle/i;
 const CREDIT_OR_QUOTA =
   /\b402\b|\b429\b|payment required|insufficient (?:credits?|funds|balance|quota)|out of (?:credits?|funds)|quota (?:exceeded|exhausted)|exceeded (?:your|the) (?:current )?quota|rate[- ]limit|too many requests/i;
 
@@ -892,6 +900,7 @@ export function workerFailureHint(message: string): string | undefined {
   // better-evidenced diagnosis, and "use fewer workers" is the wrong
   // advice for a daemon that is not answering anybody.
   if (SERVER_UNREACHABLE.test(message)) return WORKER_HINT_UNREACHABLE;
+  if (SERVER_IDLE_UNCLAIMED.test(message)) return WORKER_HINT_IDLE_SERVER;
   if (SERVER_SATURATED.test(message)) return WORKER_HINT_SATURATED;
   if (CONTEXT_EXCEEDED.test(message)) return WORKER_HINT_CONTEXT;
   if (CREDIT_OR_QUOTA.test(message)) return WORKER_HINT_QUOTA;
