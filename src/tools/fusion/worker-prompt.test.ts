@@ -8,6 +8,7 @@ import {
 import { parseDelegateArgs } from "./delegate-args.js";
 import {
   BROWSER_CODE_RULE,
+  EXACT_SPELLING_RULE,
   FOLLOW_UP_MAX_CHARS,
   ORIGINAL_REQUEST_CHAR_BUDGET,
   pickOriginalRequest,
@@ -154,6 +155,18 @@ describe("renderWorkerBrief — the original request", () => {
     // The frame line and the task body are unchanged.
     expect(brief.split("\n")[0]).toContain("You are a worker agent");
     expect(brief).toContain(TASK.instructions);
+  });
+
+  it("tells the worker to keep the request's spelling, inside RULES before the reply rule (ap3c)", () => {
+    // Both local workers wrote `sem`/`Tilføjet` for the request's
+    // `gem`/`Tilfoejet`, in code and in their own tests.
+    const brief = renderWorkerBrief(TASK, { workingDir: "/repo", originalRequest: REQUEST });
+    const at = brief.indexOf(EXACT_SPELLING_RULE);
+    expect(at).toBeGreaterThan(brief.indexOf("RULES:"));
+    expect(at).toBeLessThan(brief.indexOf("- Finish with `reply`"));
+    expect(EXACT_SPELLING_RULE).toContain("letter for letter");
+    expect(EXACT_SPELLING_RULE).toContain("in your tests");
+    expect(renderWorkerBrief(TASK, { workingDir: "/repo" })).not.toContain(EXACT_SPELLING_RULE);
   });
 
   it("omits the section entirely when there is no request (or only whitespace)", () => {

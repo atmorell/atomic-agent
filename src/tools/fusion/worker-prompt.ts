@@ -177,6 +177,16 @@ export function siblingFilesRule(hasContract: boolean): string {
 export const BROWSER_CODE_RULE =
   "- Code meant for the browser (it uses `window`, `document`, the DOM or `<script>` loading) does not run under node: `node -e`, `require` or `import` of it fails with \"Cannot find module\" or \"document is not defined\", which says nothing about your code. Check its syntax with `verify.syntax` instead of running it.";
 
+/**
+ * Measured (ap3c, 15-11-2026): the request and the brief both wrote
+ * `gem` and `Tilfoejet`, and both local workers wrote `sem` and
+ * `Tilføjet` — a word written without its special letters read as a typo
+ * to fix, in the code and in the worker's own tests, which then passed.
+ * Only rendered when the brief quotes an original request.
+ */
+export const EXACT_SPELLING_RULE =
+  "- Spell every name, key, command and output string the original request or your task fixes exactly as written there, letter for letter — also where it looks misspelled or is written without special letters (e.g. `oe` for `ø`, `ue` for `ü`). It is deliberate, and the checks compare exact text: never correct, translate or re-accent it, in the code or in your tests.";
+
 export function renderWorkerBrief(
   task: DelegateTask,
   options: {
@@ -210,6 +220,7 @@ export function renderWorkerBrief(
     `- Read files only inside ${options.workingDir} and the directories this task writes in; a read anywhere else is refused. Do not search other projects for context — ${request.length > 0 ? "your task, its FILES and the original request are" : "your task and its FILES are"} the context you have.`,
     siblingFilesRule(options.contract !== undefined),
     BROWSER_CODE_RULE,
+    ...(request.length > 0 ? [EXACT_SPELLING_RULE] : []),
     `- Finish with \`reply\` carrying the concise result of this task (about ${WORKER_REPLY_CHAR_BUDGET} characters at most). That reply is the ONLY thing the orchestrator receives — findings, file paths, decisions and anything it needs to merge your part must be inside it.`,
     ...(options.contract
       ? [
