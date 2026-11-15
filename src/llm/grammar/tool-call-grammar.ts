@@ -327,15 +327,22 @@ function parseRoot(
  * repair attempt an unparseable root gets. When that yields no call, the
  * parsed root stands and the usual error follows.
  */
+const OPENS_WITH_CALL = /^\[?\s*\{\s*"(?:tool|name|action)"\s*:/;
+
 function openingCallOver(
   body: string,
   root: ExtractedRoot,
   parsed: unknown,
   repair: RepairState,
 ): { parsed: unknown; kind: "object" | "array" } | null {
-  if (!repair.enabled || looksLikeToolCallRoot(parsed)) return null;
+  if (!repair.enabled) return null;
   const opened = body.trim();
   if (!/^[[{]/.test(opened) || opened.startsWith(root.jsonText)) return null;
+  // A root that does look like a call yields only when the answer opens
+  // with an explicit call object: then the root is a fragment of that
+  // call's own args (`{"task":"t","name":"beregn"}` in a contract) or of
+  // the text made up after it.
+  if (looksLikeToolCallRoot(parsed) && !OPENS_WITH_CALL.test(opened)) return null;
   const fixed = repairJsonText(opened);
   if (fixed === null || !looksLikeToolCallRoot(fixed.value)) return null;
   repair.report = mergeJsonRepair(repair.report, fixed);

@@ -153,6 +153,28 @@ describe("parseToolCalls with repairJson", () => {
     expect(batch.jsonRepair?.closedBrackets).toBe(true);
   });
 
+  it("reads that call when a fragment of its own args looks like a call", () => {
+    // Seen in fusion run t1-f2a: the contract's `requires` entries carry a
+    // `name` key, so the nested array passed as a call batch (`beregn`,
+    // `tokenize`) and the broken opening call was never repaired.
+    const raw =
+      '[{"tool":"fusion.delegate","args":{"tasks":[{"id":"t1","goal":"g"}],' +
+      '"contract":{"requires":[{"task":"t1","name":"beregn"},{"task":"t1","name":"tokenize"}]},' +
+      '"verify":{"cmd":"python","checks":["exit 0"]}}]' +
+      '\n\n----\n\n### world\nfusion.delegate → run f2a-1 complete.\nautoverify: PASS — "52 passed"';
+    expect(parseToolCalls(raw).calls.map((call) => call.tool)).toEqual(["beregn", "tokenize"]);
+    const batch = parseToolCalls(raw, {}, { repairJson: true });
+    expect(batch.calls.map((call) => call.tool)).toEqual(["fusion.delegate"]);
+    expect(batch.calls[0]!.args.verify).toEqual({ cmd: "python", checks: ["exit 0"] });
+    expect(batch.jsonRepair?.closedBrackets).toBe(true);
+  });
+
+  it("keeps a call-like root when the answer does not open with a call object", () => {
+    const raw = '[1, {"a":2}]\n\n[{"tool":"reply","args":{"text":"hi"}}]';
+    const batch = parseToolCalls(raw, {}, { repairJson: true });
+    expect(batch.calls).toEqual([{ tool: "reply", args: { text: "hi" } }]);
+  });
+
   it("keeps a parsed root that is no call when the opening run is no call either", () => {
     const own = '{"run":"wk-1"} and then [{"x":1}';
     expect(() => parseToolCalls(own, {}, { repairJson: true })).toThrow(/non-empty tool name/);
