@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ApprovalGate } from "../approval/approval-gate.js";
+import { osGitDiffTool } from "../tools/os/git/git-diff.js";
+import { osGitStatusTool } from "../tools/os/git/git-status.js";
 import { buildVerifyRunTool, verifySyntaxTool } from "../tools/verify/index.js";
 import {
   checkFusionOrchestrator,
@@ -164,6 +166,25 @@ describe("the fusion orchestrator gate", () => {
     const refusal = refusalFor("os.fs.write", BEFORE);
     expect(refusal.tool).toBe("os.fs.write");
     expect(refusal.summary).toContain("`os.fs.write`");
+  });
+
+  it("after a fan-out, points a shell review at the read-only git tools, which it admits", () => {
+    // A cloud orchestrator ran `git diff` through os.shell.run to review
+    // the workers and got "send it out again" — the refusal must name
+    // the way that works, and that way must actually pass.
+    const after = recordDelegation(emptyFusionOrchestratorState());
+    const summary = refusalFor("os.shell.run", after).summary;
+    expect(summary).toContain("`os.git.diff`");
+    expect(summary).toContain("`os.git.status`");
+    // The flags the shipped tools carry, so a tool that stops being
+    // read-only turns this red instead of the refusal lying.
+    const registry = registryWith({
+      "os.git.diff": { readonly: osGitDiffTool.readonly },
+      "os.git.status": { readonly: osGitStatusTool.readonly },
+    });
+    for (const tool of ["os.git.diff", "os.git.status"]) {
+      expect(checkFusionOrchestrator(tool, registry, after).allowed, tool).toBe(true);
+    }
   });
 });
 

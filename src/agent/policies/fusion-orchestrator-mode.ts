@@ -221,7 +221,11 @@ export function refusalFor(
           `authorise that directory when the fan-out asks — unless its ` +
           `note says only the user can approve the step (a dangerous ` +
           `command, the agent's own config or secret files): no fan-out ` +
-          `can authorise that, so tell the user what to run instead.`;
+          `can authorise that, so tell the user what to run instead. ` +
+          // A shell `git diff` to review the workers was refused here
+          // once; the read-only git tools do that job and pass the gate.
+          `To review what the workers changed, call \`os.git.status\` and ` +
+          `\`os.git.diff\` — they are read-only and allowed.`;
   return {
     tool,
     status: "error",

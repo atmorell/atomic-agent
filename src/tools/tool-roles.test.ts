@@ -85,6 +85,10 @@ describe("tool roles", () => {
       // of /dev/null (ATO-308).
       "os.web.fetch",
       "os.web.search",
+      // Reviewing a fan-out is reading the workers' diff; without these the
+      // orchestrator reached for os.shell.run and the gate refused it.
+      "os.git.status",
+      "os.git.diff",
       "reply",
       "finish",
     ]) {

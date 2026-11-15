@@ -117,11 +117,18 @@ const BUILDER: RoleSpec = {
  * role's names), and the wish collapsed into the nearest admitted pair
  * — `os.fs.read` of `/dev/null` beside an `os.fs.list` — step after
  * step. Both are `readonly`, so the fusion gate already admitted them.
+ *
+ * `os.git.status` and `os.git.diff` are its too: judging a fan-out means
+ * reading what the workers changed. Without them a cloud orchestrator
+ * loaded `os.shell.run` via `tool.view` to run `git diff`, and the gate
+ * refused it — two calls spent, no review done.
  */
 const ORCHESTRATOR: RoleSpec = {
   names: new Set([
     ...FS_READ_TOOLS,
     ...MEMORY_READ_TOOLS,
+    "os.git.status",
+    "os.git.diff",
     "os.web.fetch",
     "os.web.search",
     "fusion.delegate",
