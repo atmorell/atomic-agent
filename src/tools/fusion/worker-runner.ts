@@ -61,6 +61,11 @@ import {
   type LocalLegHealth,
 } from "./local-leg-health.js";
 import { hasSplitProposal, splitSteer } from "./task-tree.js";
+import {
+  findNameMisses,
+  formatNameSteer,
+  readWrittenFiles,
+} from "./request-names.js";
 
 /**
  * How many `phase: "tool"` lines one worker may put in the parent's
@@ -1181,6 +1186,28 @@ async function runOneTask(
     if (steered) splitAskedAt = stepsFinished;
     return steered;
   };
+  // The request's names (`request-names.ts`): after a step that wrote,
+  // the worker's files are compared with the names the request writes as
+  // calls, and each near miss is steered once.
+  let wroteThisStep = false;
+  const namesSteered = new Set<string>();
+  const checkRequestNames = (): void => {
+    if (options.originalRequest === undefined || deps.steerWorker === undefined) return;
+    const files = readWrittenFiles(collector.writtenPaths(), workingDir);
+    const fresh = findNameMisses(options.originalRequest, files).filter(
+      (miss) => !namesSteered.has(`${miss.expected}\u0000${miss.found}`),
+    );
+    if (fresh.length === 0) return;
+    const steered = deps.steerWorker(session.id, formatNameSteer(fresh));
+    if (steered) {
+      for (const miss of fresh) namesSteered.add(`${miss.expected}\u0000${miss.found}`);
+    }
+    deps.logger?.info("fusion: worker steered to the request's names", {
+      taskId: task.id,
+      misses: fresh.map((miss) => `${miss.found} -> ${miss.expected}`),
+      steered,
+    });
+  };
   const maybeHandBack = (): void => {
     if (declaredFiles === 0 || wroteSomething || handBack.signal.aborted)
       return;
@@ -1502,6 +1529,7 @@ async function runOneTask(
           const result = event.event.result;
           if (result.status === "ok" && WRITE_TOOLS.has(result.tool)) {
             wroteSomething = true;
+            wroteThisStep = true;
           }
           currentFingerprints.push(fingerprintToolOutcome(result.tool, result));
           if (result.status === "ok" && !READ_ONLY_TOOLS.has(result.tool)) {
@@ -1510,6 +1538,16 @@ async function runOneTask(
         }
         markNoteRead(session.id, event);
         collector.observe(event);
+        // After the collector: it is what knows the step's written paths.
+        // Once per writing step, so a batch of files is one comparison.
+        if (event.type === "step_finished" && wroteThisStep) {
+          wroteThisStep = false;
+          try {
+            checkRequestNames();
+          } catch {
+            // A check never takes the worker down.
+          }
+        }
       },
     });
     countUnreadNotes(session.id, turn.undelivered);

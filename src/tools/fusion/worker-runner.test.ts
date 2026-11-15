@@ -1836,3 +1836,87 @@ describe("runWorkerTasks — shouldStartTask (ATO-1406)", () => {
     expect(results[0]!.error).toBe("not started: the spend cap");
   });
 });
+
+describe("runWorkerTasks — the request's names", () => {
+  type TurnOptions = Parameters<WorkerRunnerDeps["runTurn"]>[2];
+  const REQUEST = "Lav klassen Lager(sti) med hent() og gem(opgaver).";
+
+  function writer(path: string) {
+    return async ({ options }: { options: TurnOptions }) => {
+      options.eventHook?.({ type: "step_started", stepIndex: 0 });
+      options.eventHook?.({
+        type: "llm_event",
+        event: {
+          type: "tool_call_executed",
+          result: { tool: "os.fs.write", status: "ok", summary: "wrote", details: { path }, truncated: false },
+          batchIndex: 0,
+          batchSize: 1,
+        },
+      });
+      options.eventHook?.({ type: "step_finished", stepIndex: 0, summary: "step done", durationMs: 1 });
+      return turnResult({ stepCount: 2 });
+    };
+  }
+
+  function withLager(text: string, run: (path: string) => Promise<void>): Promise<void> {
+    const dir = mkdtempSync(join(tmpdir(), "worker-names-"));
+    const path = join(dir, "lager.py");
+    writeFileSync(path, text);
+    return run(path).finally(() => rmSync(dir, { recursive: true, force: true }));
+  }
+
+  it("steers a worker once when its file spells a request name one letter off", () =>
+    withLager("class Lager:\n    def hent(self):\n        return []\n    def sem(self, opgaver):\n        pass\n", async (path) => {
+      const steers: string[] = [];
+      const { deps } = harness(writer(path));
+      deps.steerWorker = (_id, text) => {
+        steers.push(text);
+        return true;
+      };
+      await runWorkerTasks(deps, {
+        ...BASE,
+        originalRequest: REQUEST,
+        tasks: tasks(1),
+        maxWorkers: 1,
+        signal: new AbortController().signal,
+      });
+      expect(steers).toHaveLength(1);
+      expect(steers[0]).toContain("`gem(`");
+      expect(steers[0]).toContain("`sem`");
+    }));
+
+  it("does not steer when the file uses the request's names", () =>
+    withLager("class Lager:\n    def hent(self):\n        return []\n    def gem(self, opgaver):\n        pass\n", async (path) => {
+      const steers: string[] = [];
+      const { deps } = harness(writer(path));
+      deps.steerWorker = (_id, text) => {
+        steers.push(text);
+        return true;
+      };
+      await runWorkerTasks(deps, {
+        ...BASE,
+        originalRequest: REQUEST,
+        tasks: tasks(1),
+        maxWorkers: 1,
+        signal: new AbortController().signal,
+      });
+      expect(steers).toEqual([]);
+    }));
+
+  it("does nothing without the original request", () =>
+    withLager("def sem(self):\n    pass\n", async (path) => {
+      const steers: string[] = [];
+      const { deps } = harness(writer(path));
+      deps.steerWorker = (_id, text) => {
+        steers.push(text);
+        return true;
+      };
+      await runWorkerTasks(deps, {
+        ...BASE,
+        tasks: tasks(1),
+        maxWorkers: 1,
+        signal: new AbortController().signal,
+      });
+      expect(steers).toEqual([]);
+    }));
+});
