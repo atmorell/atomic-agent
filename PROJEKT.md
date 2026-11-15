@@ -60,6 +60,8 @@ Node 25.7 ligger i `~/.atomic-agent-byg/node-v25.7.0-win-x64`. Alt køres i Git 
 
    Resultatet er `bundle/win32-x64/`. Kopiér mappen til
    `~/.atomic-agent-byg/fusion-cache-<kort sha>/win32-x64/`.
+   `bundle:package` hang én gang (15-11) efter `bundle ready` og `sha256:`; zip og exe var
+   færdige. Står den stille efter de to linjer, så stop dens node-processer og gå videre.
 
 4. Repoets egne prøver for de rørte områder:
 
