@@ -94,6 +94,8 @@ Node 25.7 ligger i `~/.atomic-agent-byg/node-v25.7.0-win-x64`. Alt køres i Git 
 
    Scriptet skal melde `0 afviger efter kopiering`. Det flytter også
    skrivebordsprogrammets opdateringskilde væk og slår agentens opdateringstjek fra.
+   Start programmet med `python …/atomic-eget-byg/start-atomic.py`, ikke fra
+   Claude-appen: kun sådan når brugervariablerne (MTP, 2 GB cache) motoren.
 
 7. Kør opgave 1 igen uden `PROEVE_AA`, og push: `git push --force-with-lease origin fusion-cache`
 
