@@ -73,7 +73,7 @@ import {
   applyJudgeVerdict,
   buildAcceptanceChecklist,
   judgeSummary,
-  judgeTask,
+  judgeTasks,
   redItems,
   renderAcceptanceBlock,
   renderRedItems,
@@ -1399,11 +1399,11 @@ export function buildFusionDelegateTool(
           rows: readonly WorkerTaskResult[],
         ): Promise<Map<string, JudgeVerdict>> => {
           const verdicts = new Map<string, JudgeVerdict>();
-          for (const row of rows) {
-            if (!judgeable(row)) continue;
-            const task = parsed.tasks.find((t) => t.id === row.id)!;
-            const stop = budgetStop();
-            if (stop !== undefined || ctx.signal.aborted) {
+          const due = rows.filter(judgeable);
+          if (due.length === 0) return verdicts;
+          const stop = budgetStop();
+          if (stop !== undefined || ctx.signal.aborted) {
+            for (const row of due) {
               verdicts.set(row.id, {
                 green: false,
                 items: [],
@@ -1413,22 +1413,17 @@ export function buildFusionDelegateTool(
                     : `not judged: ${stop.message}`,
                 costUsd: null,
               });
-              continue;
             }
-            const verdict = await judgeTask({
-              task,
+            return verdicts;
+          }
+          // One judge call for the round, not one per task: the preamble,
+          // the user's request and shared files were paid for once per
+          // task (k3a, 15-11-2026: two calls of 7-9k written tokens each).
+          const judged = await judgeTasks({
+            entries: due.map((row) => ({
+              task: parsed.tasks.find((t) => t.id === row.id)!,
               items: acceptance.get(row.id) ?? [],
-              facts: {
-                checkOutcomes,
-                findings: contract?.findings ?? [],
-              },
               reply: row.reply,
-              contract: parsed.contract,
-              workingDir: ctx.workingDir,
-              target: judgeTarget,
-              pricing: judgePricing,
-              complete: sideComplete!,
-              signal: ctx.signal,
               // A split task's subtasks ran under their own ids: no record
               // then, rather than one that wrongly says "none".
               ...(workerCommands.has(row.id)
@@ -1439,14 +1434,26 @@ export function buildFusionDelegateTool(
                     },
                   }
                 : {}),
-              ...(originalRequest === undefined ? {} : { originalRequest }),
-            });
+            })),
+            facts: {
+              checkOutcomes,
+              findings: contract?.findings ?? [],
+            },
+            contract: parsed.contract,
+            workingDir: ctx.workingDir,
+            target: judgeTarget,
+            pricing: judgePricing,
+            complete: sideComplete!,
+            signal: ctx.signal,
+            ...(originalRequest === undefined ? {} : { originalRequest }),
+          });
+          for (const [taskId, verdict] of judged) {
             if (verdict.costUsd !== null && verdict.costUsd > 0) {
               judgeSpendUsd += verdict.costUsd;
               run?.addSpend(verdict.costUsd);
               turnBudget.addWorkerSpend(ctx.sessionId, verdict.costUsd);
             }
-            verdicts.set(row.id, verdict);
+            verdicts.set(taskId, verdict);
           }
           return verdicts;
         };

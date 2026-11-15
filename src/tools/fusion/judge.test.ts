@@ -12,11 +12,13 @@ import {
   buildAcceptanceChecklist,
   gatherEvidence,
   JUDGE_EVIDENCE_CHARS,
+  JUDGE_MAX_OUTPUT_TOKENS,
   JUDGE_REQUEST_CHARS,
   JUDGE_EARLIER_RUN_CHARS,
   JUDGE_RUN_CHARS,
   JUDGE_SEVERITY_RULE,
   judgeTask,
+  judgeTasks,
   parseJudgeAnswer,
   renderJudgePrompt,
   renderRuntimeRecord,
@@ -674,5 +676,154 @@ describe("a node closes only on a green list (ATO-944)", () => {
     expect(d.briefs[0]).not.toContain("ACCEPTANCE CHECKLIST");
     expect((result.details.tasks as Array<{ status: string }>)[0]!.status).toBe("ok");
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("judges a fan-out's round in one call, not one per task (k3a, 15-11-2026)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-fan-"));
+    const prompts: string[] = [];
+    const d = deps(dir, async (call) => {
+      prompts.push(call.prompt);
+      return { content: JSON.stringify({ red: [], pass: ["t:a2", "u:a1"] }) };
+    });
+    const result = await buildFusionDelegateTool(d).run(
+      { tasks: [...TASK, { id: "u", title: "U", instructions: "say the score" }] },
+      { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+    );
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("## Task t");
+    expect(prompts[0]).toContain("## Task u");
+    expect(prompts[0]).toMatch(/- u:a1: the task is done as instructed/);
+    const rows = result.details.tasks as Array<{ id: string; status: string }>;
+    expect(rows.map((r) => r.status)).toEqual(["ok", "ok"]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("one judge call for several tasks", () => {
+  const facts = { checkOutcomes: [], findings: [] };
+  const base = (dir: string, complete: EscalationComplete) => ({
+    facts,
+    contract: undefined,
+    workingDir: dir,
+    target: TARGET,
+    pricing: undefined,
+    complete,
+    signal: new AbortController().signal,
+  });
+
+  it("asks once, names items <task>:<item>, shows a shared file once and keeps the entries' order", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-batch-"));
+    writeFileSync(join(dir, "models.py"), "class Todo: pass\n");
+    writeFileSync(join(dir, "cli.py"), "print('Tilfoejet')\n");
+    const a: DelegateTask = { id: "pkg", title: "P", instructions: "write the model", files: ["models.py"] };
+    const b: DelegateTask = { id: "cli", title: "C", instructions: "write the CLI", files: ["cli.py", "./models.py"] };
+    const prompts: string[] = [];
+    const tokens: number[] = [];
+    const verdicts = await judgeTasks({
+      ...base(dir, async (call) => {
+        prompts.push(call.prompt);
+        tokens.push(call.maxOutputTokens ?? 0);
+        return { content: '{"red":[{"id":"cli:a3","why":"prints Tilføjet"}],"pass":["pkg:a2","cli:a3"]}' };
+      }),
+      entries: [
+        { task: b, items: buildAcceptanceChecklist(b, undefined), reply: "" },
+        { task: a, items: buildAcceptanceChecklist(a, undefined), reply: "" },
+      ],
+    });
+    expect(prompts).toHaveLength(1);
+    expect(tokens[0]).toBe(2 * JUDGE_MAX_OUTPUT_TOKENS);
+    expect(prompts[0]!.split("class Todo").length - 1).toBe(1);
+    expect(prompts[0]).toContain("Workers say they finished the 2 tasks below");
+    expect(prompts[0]).toContain("- cli:a3: the task is done as instructed (its instructions are above)");
+    expect(prompts[0]).toContain("- pkg:a1: met — 17 bytes");
+    expect([...verdicts.keys()]).toEqual(["cli", "pkg"]);
+    // Named both red and passed: red wins.
+    expect(verdicts.get("cli")).toMatchObject({ green: false });
+    expect(verdicts.get("cli")!.items.find((i) => i.id === "a3")).toMatchObject({
+      pass: false,
+      why: "prints Tilføjet",
+      by: "judge",
+    });
+    expect(verdicts.get("pkg")).toMatchObject({ green: true });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("does not ask for a task whose fact is red, and asks the rest with plain ids", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-batch-red-"));
+    writeFileSync(join(dir, "a.txt"), "score 3");
+    const ok: DelegateTask = { id: "ok", title: "O", instructions: "write a.txt", files: ["a.txt"] };
+    const gone: DelegateTask = { id: "gone", title: "G", instructions: "write b.txt", files: ["b.txt"] };
+    const prompts: string[] = [];
+    const verdicts = await judgeTasks({
+      ...base(dir, async (call) => {
+        prompts.push(call.prompt);
+        return { content: '{"red":[],"pass":["a2"]}' };
+      }),
+      entries: [
+        { task: gone, items: buildAcceptanceChecklist(gone, undefined), reply: "" },
+        { task: ok, items: buildAcceptanceChecklist(ok, undefined), reply: "" },
+      ],
+    });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).not.toContain("write b.txt");
+    expect(prompts[0]).toContain("- a2: the task is done as instructed");
+    expect(verdicts.get("ok")).toMatchObject({ green: true });
+    expect(verdicts.get("gone")!.items.map((i) => i.by)).toEqual(["fact", "skipped"]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("splits the call's cost over the tasks it asked, and leaves them all unverified when it fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-batch-cost-"));
+    writeFileSync(join(dir, "a.txt"), "x");
+    writeFileSync(join(dir, "b.txt"), "y");
+    const t1: DelegateTask = { id: "t1", title: "1", instructions: "write a.txt", files: ["a.txt"] };
+    const t2: DelegateTask = { id: "t2", title: "2", instructions: "write b.txt", files: ["b.txt"] };
+    const entries = [
+      { task: t1, items: buildAcceptanceChecklist(t1, undefined), reply: "" },
+      { task: t2, items: buildAcceptanceChecklist(t2, undefined), reply: "" },
+    ];
+    const pricing = { input: 1_000_000, output: 0 };
+    const priced = await judgeTasks({
+      ...base(dir, async () => ({
+        content: '{"red":[],"pass":["t1:a2"]}',
+        usage: { promptTokens: 1, completionTokens: 0, totalTokens: 1 },
+      })),
+      pricing,
+      entries,
+    });
+    expect(priced.get("t1")).toMatchObject({ green: true });
+    // Left out of both lists: red, never green.
+    expect(priced.get("t2")!.items.find((i) => i.id === "a2")).toMatchObject({
+      pass: false,
+      why: "the judge gave no verdict",
+    });
+    const costs = [...priced.values()].map((v) => v.costUsd);
+    expect(costs[0]).toBeGreaterThan(0);
+    expect(costs[0]).toBe(costs[1]);
+    const failed = await judgeTasks({
+      ...base(dir, async () => {
+        throw new Error("cli exited 1");
+      }),
+      entries,
+    });
+    expect([...failed.values()].map((v) => v.unverified)).toEqual([
+      "the judge could not run: cli exited 1",
+      "the judge could not run: cli exited 1",
+    ]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reads the compact answer and the older one; neither list nor items is unreadable", () => {
+    expect(parseJudgeAnswer('{"red":[{"id":"a1","why":"wrong"}],"pass":["a2",{"id":"a3"}]}')).toEqual(
+      new Map([
+        ["a2", { pass: true, why: "met" }],
+        ["a3", { pass: true, why: "met" }],
+        ["a1", { pass: false, why: "wrong" }],
+      ]),
+    );
+    expect(parseJudgeAnswer('{"red":["a1"]}')!.get("a1")).toEqual({ pass: false, why: "no reason given" });
+    expect(parseJudgeAnswer('{"items":[{"id":"a1","pass":true,"why":"ok"}]}')!.get("a1")!.pass).toBe(true);
+    expect(parseJudgeAnswer('{"verdict":"green"}')).toBeNull();
+    expect(parseJudgeAnswer("null")).toBeNull();
   });
 });
