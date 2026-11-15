@@ -174,8 +174,12 @@ export interface RegisterOsToolsOptions extends DangerousToolOptions {
   resolveOriginalRequest?: (sessionId: string) => string | undefined;
   /** The agent's reply before the turn's user message, for the same refusal (ATO-860). */
   resolvePreviousReply?: (sessionId: string) => string | undefined;
-  /** A fan-out's declared inputs per worker session (`fs-declared-inputs.ts`); omitted declares nothing. */
-  declaredInputs?: Pick<DeclaredInputsRegistry, "inputsOf">;
+  /**
+   * A fan-out's declared inputs per worker session (`fs-declared-inputs.ts`),
+   * and each running worker's parent for the created set; omitted declares nothing.
+   */
+  declaredInputs?: Pick<DeclaredInputsRegistry, "inputsOf"> &
+    Partial<Pick<DeclaredInputsRegistry, "parentOf">>;
   /**
    * Operator policy for the shell guard — today the git remote-sync
    * switch. Predicates rather than values so a toggle flipped live in
@@ -218,13 +222,22 @@ export function registerOsTools(
   // write, the edit, the patch and the restore share the store that
   // remembers what each session created and what was replaced in each
   // working directory (by any session — a fusion worker's included).
+  // A running worker shares its parent's created set (`parentOf`).
+  const declared = options.declaredInputs;
   const fsMutation = {
     approvals: options.approvals,
     approvalRequired: options.approvalRequired,
     trustConfigPaths: options.trustConfigPaths,
     ...(options.stateDir === undefined
       ? {}
-      : { restore: new FileRestoreStore(resolve(options.stateDir, "restore")) }),
+      : {
+          restore: new FileRestoreStore(
+            resolve(options.stateDir, "restore"),
+            declared?.parentOf === undefined
+              ? undefined
+              : (id) => declared.parentOf?.(id),
+          ),
+        }),
     ...(options.resolveOriginalRequest === undefined
       ? {}
       : { resolveOriginalRequest: options.resolveOriginalRequest }),

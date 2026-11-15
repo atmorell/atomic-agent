@@ -466,9 +466,13 @@ export interface WorkerRunnerDeps {
   /**
    * Where a worker's declared inputs (the contract's `inputs`, F51) are
    * registered for its session so `os.fs.write` refuses to replace
-   * them. Absent (tests, embedders) declares nothing.
+   * them, and where the worker is linked to its parent so it counts the
+   * files the parent's other workers created as the agent's (a judge's
+   * retry rewriting the first attempt's file, ap3e). Absent (tests,
+   * embedders) declares nothing.
    */
-  declaredInputs?: Pick<DeclaredInputsRegistry, "declare" | "clear">;
+  declaredInputs?: Pick<DeclaredInputsRegistry, "declare" | "clear"> &
+    Partial<Pick<DeclaredInputsRegistry, "link">>;
   /** Progress into the PARENT session's frame. */
   emitEvent: (sessionId: string, event: AgentLoopEvent) => void;
   workingDir: string;
@@ -982,6 +986,9 @@ async function runOneTask(
       pathBase ?? workingDir,
     );
     if (inputs.length > 0) deps.declaredInputs?.declare(id, inputs);
+    // What this worker creates is the agent's for the whole fan-out
+    // family, and the reverse: a retry may rewrite the first attempt's file.
+    deps.declaredInputs?.link?.(id, options.parentSessionId);
   };
   const disarmWorkerSession = (id: string): void => {
     // Always: the gate is process-wide and a stale refusal policy keyed

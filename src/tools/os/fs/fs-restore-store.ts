@@ -44,7 +44,11 @@ export { restoreKey, type RestoreCopy } from "./fs-restore-manifest.js";
  *  - The CREATED set stays per session, at `<root>/sessions/<id>.json`:
  *    "the agent made this file" is a fact about the session that made
  *    it, so another session's replacement of that file is still
- *    announced.
+ *    announced. A fusion worker's session is linked to its parent while
+ *    it runs (`parentOf`): what it creates is recorded under the parent
+ *    too, and it counts the parent's files as its own, so a judge's
+ *    retry — a new worker — may rewrite what the first attempt created
+ *    (ap3e, 15-11-2026). An unrelated session is still announced.
  *
  * On disk rather than in `SessionState` because the tools consult it
  * BEFORE a write, and a tool sees only its `ToolContext` (working dir,
@@ -72,7 +76,14 @@ export class FileRestoreStore {
   /** One in-flight read-modify-write per index (see `serialised`). */
   private readonly chains = new Map<string, Promise<void>>();
 
-  constructor(private readonly root: string) {}
+  /**
+   * `parentOf` names the session that delegated a running worker
+   * (`DeclaredInputsRegistry.parentOf`); omitted, every session stands alone.
+   */
+  constructor(
+    private readonly root: string,
+    private readonly parentOf?: (sessionId: string) => string | undefined,
+  ) {}
 
   /** `<root>/<restoreKey(workingDir)>` — the working directory's copies and manifest. */
   copiesDir(workingDir: string): string {
@@ -84,21 +95,38 @@ export class FileRestoreStore {
     return join(this.root, SESSIONS_DIR, `${safeSegment(sessionId)}.json`);
   }
 
-  /** Did a tool of this session create `absolute` (write to a path that did not exist)? */
+  /**
+   * Did a tool of this session — or, for a running worker, of its
+   * parent's family — create `absolute` (write to a path that did not exist)?
+   */
   async wasCreated(sessionId: string, absolute: string): Promise<boolean> {
-    return (await this.readSession(sessionId)).created.includes(absolute);
+    for (const id of this.family(sessionId)) {
+      if ((await this.readSession(id)).created.includes(absolute)) return true;
+    }
+    return false;
   }
 
+  /** Record `absolute` as created by this session, and by its parent while it is a linked worker. */
   async recordCreated(sessionId: string, absolute: string): Promise<void> {
-    await this.serialised(`session:${sessionId}`, async () => {
-      const record = await this.readSession(sessionId);
-      if (record.created.includes(absolute)) return;
-      record.created.push(absolute);
-      if (record.created.length > CREATED_PATHS_CAP) {
-        record.created.splice(0, record.created.length - CREATED_PATHS_CAP);
-      }
-      await writeJsonAtomically(this.sessionFile(sessionId), record);
-    });
+    for (const id of this.family(sessionId)) {
+      await this.serialised(`session:${id}`, async () => {
+        const record = await this.readSession(id);
+        if (record.created.includes(absolute)) return;
+        record.created.push(absolute);
+        if (record.created.length > CREATED_PATHS_CAP) {
+          record.created.splice(0, record.created.length - CREATED_PATHS_CAP);
+        }
+        await writeJsonAtomically(this.sessionFile(id), record);
+      });
+    }
+  }
+
+  /** The session itself, then its parent when it is a linked worker. */
+  private family(sessionId: string): readonly string[] {
+    const parent = this.parentOf?.(sessionId);
+    return parent === undefined || parent === sessionId
+      ? [sessionId]
+      : [sessionId, parent];
   }
 
   /**

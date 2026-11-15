@@ -404,6 +404,50 @@ describe("os.fs.write refuses to replace an input the request names (F51)", () =
     ).toBe("ok");
   });
 
+  it("lets a worker rewrite what another worker of the same parent created; an unrelated session is still refused (ap3e)", async () => {
+    // Live: the judge sent cli.py back, and its retry — a new worker
+    // session — was refused the rewrite of the file the first attempt
+    // had created, as if it were the user's.
+    request = "Build opg/cli.py with argparse";
+    const registry = new DeclaredInputsRegistry();
+    const linked = new FileRestoreStore(join(stateDir, "restore"), (id) =>
+      registry.parentOf(id),
+    );
+    const t = tools(linked);
+    registry.link("s-w-first", "s-parent");
+    const created = await t.write.run(
+      { path: "opg/cli.py", content: "first\n" },
+      ctx("s-w-first"),
+    );
+    expect(created.status).toBe("ok");
+    registry.clear("s-w-first");
+
+    registry.link("s-w-retry", "s-parent");
+    const retried = await t.write.run(
+      { path: "opg/cli.py", content: "second\n" },
+      ctx("s-w-retry"),
+    );
+    expect(retried.status).toBe("ok");
+    expect(await readFile(join(dir, "opg", "cli.py"), "utf8")).toBe("second\n");
+    registry.clear("s-w-retry");
+    // The orchestrator itself: its worker's file is the agent's.
+    expect(
+      (await t.write.run({ path: "opg/cli.py", content: "third\n" }, ctx("s-parent"))).status,
+    ).toBe("ok");
+
+    const other = await t.write.run(
+      { path: "opg/cli.py", content: "fourth\n" },
+      ctx("s-other"),
+    );
+    expect(other.status).toBe("error");
+    expect(other.summary).toContain("cli.py is an input the request names");
+    // Unlinked, the retry worker stands alone again: it replaced the
+    // file, it did not create it.
+    expect(
+      (await t.write.run({ path: "opg/cli.py", content: "fifth\n" }, ctx("s-w-retry"))).status,
+    ).toBe("error");
+  });
+
   it("keeps the way onward when the path is long enough to reach the compressor's cap", async () => {
     // A worker writes by absolute path into a nested workspace, and
     // `display` is the path as the call spelled it. The declared-input

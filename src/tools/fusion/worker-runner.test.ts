@@ -1691,6 +1691,25 @@ describe("runWorkerTasks — declared inputs (F51)", () => {
     );
     expect(log).toEqual(["turn s-w-1", "clear s-w-1"]);
   });
+
+  it("links the worker to its parent before its turn, and the same clear drops the link (ap3e)", async () => {
+    const log: string[] = [];
+    const { deps } = harness(async ({ session }) => {
+      log.push(`turn ${session.id}`);
+      return turnResult();
+    });
+    await runWorkerTasks(
+      {
+        ...deps,
+        declaredInputs: {
+          ...registry(log),
+          link: (sessionId: string, parent: string) => log.push(`link ${sessionId} ${parent}`),
+        },
+      },
+      { ...BASE, tasks: tasks(1), maxWorkers: 1, signal: new AbortController().signal },
+    );
+    expect(log).toEqual(["link s-w-1 s-parent", "turn s-w-1", "clear s-w-1"]);
+  });
 });
 
 describe("runWorkerTasks — task tree (ATO-940)", () => {
