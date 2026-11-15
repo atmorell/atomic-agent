@@ -31,6 +31,16 @@ const SNAPSHOT_MAX_FILES = 64;
 const SNAPSHOT_MAX_BYTES = 1_000_000;
 /** Hard cap on the rendered block. */
 export const AUTOVERIFY_BLOCK_CHARS = 4000;
+/**
+ * Steps one repair worker gets, unless the configured worker budget is
+ * smaller. A repair is a narrow fix with the failure and the work's
+ * changes in its brief; with the full worker budget (60 steps, 45 min)
+ * two rounds kept the orchestrator waiting over half an hour on a
+ * failure it could have read in one call.
+ */
+export const AUTOVERIFY_REPAIR_MAX_STEPS = 12;
+/** At most this many changed lines go into a repair brief. */
+export const AUTOVERIFY_CHANGE_LINES = 40;
 
 export type AutoVerifyDispatch = (
   args: Record<string, unknown>,
@@ -221,10 +231,49 @@ export function diffStat(before: FileSnapshot, after: FileSnapshot): AutoVerifyD
   return rows;
 }
 
+/**
+ * The lines the work added, as `path:line + text` in the new file's
+ * numbering, with a count of removed lines per file — the same
+ * multiset difference as `diffStat`, capped at `max` lines.
+ */
+export function changedLines(
+  before: FileSnapshot,
+  after: FileSnapshot,
+  max = AUTOVERIFY_CHANGE_LINES,
+): string[] {
+  const out: string[] = [];
+  let hidden = 0;
+  for (const path of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+    const a = splitLines(before.get(path) ?? null);
+    const b = splitLines(after.get(path) ?? null);
+    const counts = new Map<string, number>();
+    for (const line of a) counts.set(line, (counts.get(line) ?? 0) + 1);
+    b.forEach((line, i) => {
+      const left = counts.get(line) ?? 0;
+      if (left > 0) {
+        counts.set(line, left - 1);
+        return;
+      }
+      const text = line.length > EXCERPT_LINE_CHARS ? `${line.slice(0, EXCERPT_LINE_CHARS)}…` : line;
+      if (out.length < max) out.push(`${path}:${i + 1} + ${text}`);
+      else hidden++;
+    });
+    let removed = 0;
+    for (const left of counts.values()) removed += left;
+    if (removed > 0) {
+      if (out.length < max) out.push(`${path}: ${removed} line${removed === 1 ? "" : "s"} removed`);
+      else hidden++;
+    }
+  }
+  if (hidden > 0) out.push(`… ${hidden} more`);
+  return out;
+}
+
 /** The repair brief: the failing check, its excerpt, the work it judged. */
 export function repairInstructions(
   verdict: { exitCode: number | null; command?: string; excerpt: readonly string[] },
   tasks: readonly Pick<DelegateTask, "id" | "title">[],
+  changes: readonly string[] = [],
 ): string {
   return [
     "The work below was done, but its check fails. Fix the code so the check passes. Change only what the failure points at; do not weaken, skip or delete tests.",
@@ -232,6 +281,15 @@ export function repairInstructions(
     "Failure:",
     ...verdict.excerpt.map((l) => `  ${l}`),
     `Work done: ${tasks.map((t) => `${t.id} (${t.title})`).join("; ")}`,
+    ...(changes.length === 0
+      ? []
+      : [
+          // A repair worker once spent 30 minutes on two old tests that
+          // failed only because the new test block stopped the instance
+          // they share; the cause was in the lines it had just added.
+          "The work changed these lines. A failing check the work did not touch was most likely broken by them (shared state, a stopped or restarted instance, a changed order) — read them before anything else:",
+          ...changes.map((l) => `  ${l}`),
+        ]),
     "Reply with what you changed and why.",
   ].join("\n");
 }
@@ -240,6 +298,8 @@ export interface RunAutoVerifyInput {
   verifyArgs: Record<string, unknown>;
   /** Repairs allowed after the first verify (0..5). */
   maxRepairs: number;
+  /** Step budget of each repair task (`AUTOVERIFY_REPAIR_MAX_STEPS` or less). */
+  repairMaxSteps: number;
   dispatch: AutoVerifyDispatch;
   ctx: ToolContext;
   tasks: readonly DelegateTask[];
@@ -303,7 +363,12 @@ export async function runAutoVerify(input: RunAutoVerifyInput): Promise<AutoVeri
     const task: DelegateTask = {
       id: `autoverify-repair-${round}`,
       title: `Repair until the check passes (round ${round})`,
-      instructions: repairInstructions(verdict, input.tasks),
+      instructions: repairInstructions(
+        verdict,
+        input.tasks,
+        changedLines(input.before, await input.snapshot()),
+      ),
+      maxSteps: input.repairMaxSteps,
       ...(files.length === 0 ? {} : { files }),
     };
     const rows = await input.repair(task);

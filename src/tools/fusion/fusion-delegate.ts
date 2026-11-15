@@ -41,6 +41,7 @@ import {
 } from "./worker-runner.js";
 import { describeReplan, renderReplanBlock } from "./replan.js";
 import {
+  AUTOVERIFY_REPAIR_MAX_STEPS,
   diffStat,
   readAutoVerifyArgs,
   renderAutoVerifyBlock,
@@ -1511,6 +1512,7 @@ export function buildFusionDelegateTool(
             : await runAutoVerify({
                 verifyArgs,
                 maxRepairs: mode.autoVerify?.maxRounds ?? 0,
+                repairMaxSteps: Math.min(AUTOVERIFY_REPAIR_MAX_STEPS, mode.workerMaxSteps),
                 dispatch: deps.dispatchVerify!,
                 ctx: { ...ctx, signal: runSignal },
                 tasks: parsed.tasks,

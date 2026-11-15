@@ -14,7 +14,10 @@ import { StructuredLogger } from "../../tracing/structured-logger.js";
 import type { ToolContext } from "../tool-registry.js";
 import {
   AUTOVERIFY_BLOCK_CHARS,
+  AUTOVERIFY_CHANGE_LINES,
   AUTOVERIFY_EXCERPT_LINES,
+  AUTOVERIFY_REPAIR_MAX_STEPS,
+  changedLines,
   classifyVerifyResult,
   diffStat,
   failureExcerpt,
@@ -151,6 +154,27 @@ describe("autoverify pieces", () => {
       { path: "b.py", added: 2, removed: 1 },
       { path: "new.py", added: 2, removed: 0 },
     ]);
+  });
+
+  it("lists the added lines in the new numbering, removed counts, capped", () => {
+    const before = new Map<string, string | null>([
+      ["t.mjs", "a\nb\nc\n"],
+      ["new.mjs", null],
+    ]);
+    const after = new Map<string, string | null>([
+      ["t.mjs", "a\nstop();\nc\n"],
+      ["new.mjs", "x\n"],
+    ]);
+    expect(changedLines(before, after)).toEqual([
+      "new.mjs:1 + x",
+      "t.mjs:2 + stop();",
+      "t.mjs: 1 line removed",
+    ]);
+    const many = new Map<string, string | null>([["t.mjs", Array.from({ length: 50 }, (_, i) => `l${i}`).join("\n")]]);
+    const lines = changedLines(new Map([["t.mjs", ""]]), many);
+    expect(lines).toHaveLength(AUTOVERIFY_CHANGE_LINES + 1);
+    expect(lines.at(-1)).toBe("… 10 more");
+    expect(changedLines(before, before)).toEqual([]);
   });
 
   it("renders one compact block, deterministic and capped", () => {
@@ -319,6 +343,11 @@ describe("fusion.delegate autoverify", () => {
     expect(repair).toContain("E       assert 3 == 2.0");
     expect(repair).toContain("FAILED test_calc.py::test_divide - assert 3 == 2.0");
     expect(repair).toContain("Work done: t1 (Calc)");
+    // The worker's own change is in the brief, and the repair runs on a
+    // short leash: the configured 7 steps here, at most 12 anywhere.
+    expect(repair).toContain("calc.py:2 +     # integer");
+    const repairCall = w.runTurn.mock.calls.find((c) => String(c[1]).includes("its check fails"))!;
+    expect((repairCall[2] as { maxSteps?: number }).maxSteps).toBe(7);
     expect(result.summary.split("\n")[0]).toBe(
       "autoverify: PASS after 2 rounds (exit 0, 1 repair: autoverify-repair-1 ok) — `python -m pytest -q`",
     );
@@ -326,6 +355,19 @@ describe("fusion.delegate autoverify", () => {
     const report = result.details.autoverify as AutoVerifyReport;
     expect(report.excerpt).toEqual([]);
     expect(report.diffstat).toEqual([{ path: "calc.py", added: 1, removed: 1 }]);
+  });
+
+  it("caps a repair at 12 steps when the worker budget is larger", async () => {
+    let n = 0;
+    const dispatch = vi.fn<AutoVerifyDispatch>(async () => verifyResult(++n > 1));
+    const w = workers();
+    await buildFusionDelegateTool(deps(dispatch, w.runTurn, fusionMode({ workerMaxSteps: 60 }))).run(
+      { tasks: [TASK], verify: VERIFY },
+      ctx(),
+    );
+    const steps = w.runTurn.mock.calls.map((c) => (c[2] as { maxSteps?: number }).maxSteps);
+    expect(steps).toEqual([60, AUTOVERIFY_REPAIR_MAX_STEPS]);
+    expect(AUTOVERIFY_REPAIR_MAX_STEPS).toBe(12);
   });
 
   it("still fails after the configured rounds: N repairs, N+1 verifies, the excerpt kept", async () => {
