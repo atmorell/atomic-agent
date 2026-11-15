@@ -45,6 +45,13 @@ export type EscalationComplete = (input: {
    * (ATO-1388). Set by `fusion.delegate`, never by the callers below it.
    */
   sessionId?: string;
+  /**
+   * Continue a vendor CLI's session under this key (the provider's
+   * `CompletionRequest.sessionId`): the fusion judge's retry round
+   * resumes its first round and reads it from cache. Unrelated to
+   * `sessionId`, which only names whose spend the call is.
+   */
+  cliSessionKey?: string;
 }) => Promise<{ content: string; usage?: CompletionUsage }>;
 
 export function renderAdvisorPrompt(input: {

@@ -17,6 +17,24 @@ import { parseToolCalls } from "../../grammar/tool-call-grammar.js";
 const FIXED_PART_END = "\n### capabilities";
 
 /**
+ * The same split for a fusion judge call (`tools/fusion/judge.ts`): its
+ * rules are the same text in every judge call, the case after this
+ * heading is the call's own. A retry round's follow-up extends the case,
+ * so the next round resumes the session and reads the first from cache.
+ */
+export const JUDGE_FIXED_PART_END = "\n## The case to judge";
+
+/** Where the fixed part ends: the earliest of the known headings. */
+function fixedPartEnd(prompt: string): number {
+  let cut = -1;
+  for (const heading of [FIXED_PART_END, JUDGE_FIXED_PART_END]) {
+    const at = prompt.indexOf(heading);
+    if (at > 0 && (cut < 0 || at < cut)) cut = at;
+  }
+  return cut;
+}
+
+/**
  * The prompt ends in a short step-mutable tail (the reasoning opener)
  * that moves with every call. A longer difference is not a moved tail
  * but a rewritten prompt, and that starts a new session.
@@ -82,7 +100,7 @@ export function planCliSessionTurn(
   newId: () => string,
   options: CliSessionOptions = {},
 ): CliSessionTurn | null {
-  const cut = prompt.indexOf(FIXED_PART_END);
+  const cut = fixedPartEnd(prompt);
   if (cut <= 0) return null;
   const system = `${baseSystemPrompt}\n\n${prompt.slice(0, cut).trimEnd()}`;
   const user = prompt.slice(cut).trimStart();

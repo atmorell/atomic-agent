@@ -16,15 +16,21 @@ import {
   JUDGE_REQUEST_CHARS,
   JUDGE_EARLIER_RUN_CHARS,
   JUDGE_RUN_CHARS,
+  JUDGE_RULES,
   JUDGE_SEVERITY_RULE,
+  JUDGE_WHOLE_FILE_CHARS,
+  gatherJudgeEvidence,
   judgeTask,
   judgeTasks,
   parseJudgeAnswer,
+  renderJudgeCallPrompt,
   renderJudgePrompt,
   renderRuntimeRecord,
   shareEvidenceBudget,
   type AcceptanceItem,
+  type JudgeSession,
 } from "./judge.js";
+import { JUDGE_FIXED_PART_END } from "../../llm/provider/subscription-cli/cli-session-chain.js";
 import {
   buildFusionDelegateTool,
   type FusionDelegateDeps,
@@ -131,7 +137,7 @@ describe("the judge reads the user's original request (ap3b, 15-11-2026)", () =>
     expect(prompts[0]).toMatch(/- a3: every exact name, message, output line/);
     expect(verdict.green).toBe(false);
     expect(verdict.items.find((i) => i.id === "a3")).toMatchObject({ pass: false, by: "judge" });
-    expect(prompts[1]).not.toContain("original request");
+    expect(prompts[1]).not.toContain("## The user's original request");
     expect(prompts[2]).toContain("[…]");
     expect(prompts[2]).not.toContain("TAIL");
     rmSync(dir, { recursive: true, force: true });
@@ -164,10 +170,125 @@ describe("the judge names every defect in its first round (k3b, 16-11-2026)", ()
       facts: [],
       evidence: "cli.py: print('Tilføjet')",
     });
-    const answer = prompt.slice(prompt.lastIndexOf("Answer with JSON only"));
+    const answer = prompt.slice(
+      prompt.lastIndexOf("Answer with JSON only"),
+      prompt.indexOf(JUDGE_FIXED_PART_END),
+    );
     expect(answer).toContain("every defect in this item, joined by '; '");
     expect(answer).toContain("Name all of a red item's defects now");
+    expect(answer).toContain('another item that fails for the same defect says only "same as <id>"');
     expect(answer).not.toContain("what is wrong");
+  });
+});
+
+describe("the judge's prompt is built to be cached (k3c, 16-11-2026)", () => {
+  it("opens every call with the same rules and puts the case after JUDGE_FIXED_PART_END", () => {
+    const a: DelegateTask = { id: "a", title: "A", instructions: "write a.py", files: ["a.py"] };
+    const b: DelegateTask = { id: "b", title: "B", instructions: "write b.py", files: ["b.py"] };
+    const row = (task: DelegateTask) => ({ task, items: buildAcceptanceChecklist(task, undefined), facts: [] });
+    const one = renderJudgeCallPrompt({ tasks: [row(a)], evidence: "e1", originalRequest: "build it" });
+    const two = renderJudgeCallPrompt({
+      tasks: [row(a), row(b)],
+      evidence: "e2",
+      originalRequest: "build them",
+    });
+    for (const prompt of [one, two]) {
+      expect(prompt.slice(0, prompt.indexOf(JUDGE_FIXED_PART_END))).toBe(`${JUDGE_RULES}\n`);
+    }
+    expect(one.indexOf("## The user's original request")).toBeGreaterThan(
+      one.indexOf(JUDGE_FIXED_PART_END),
+    );
+    expect(two).toContain("Workers say they finished the 2 tasks below, each one part of the same job. An item's id is <task>:<item>.");
+    expect(JUDGE_RULES).toContain("An item that needs a change the evidence does not show is not met.");
+    expect(JUDGE_RULES).not.toContain("${");
+  });
+
+  it("shows a new file whole, a large changed one as a diff and a large unchanged one by name", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-diff-"));
+    const big = `${Array.from({ length: 200 }, (_, i) => `line ${i + 1} ${"x".repeat(20)}`).join("\n")}\n`;
+    const bigNow = big.replace("line 100 ", "line 100 CHANGED ");
+    expect(big.length).toBeGreaterThan(JUDGE_WHOLE_FILE_CHARS);
+    writeFileSync(join(dir, "big.py"), bigNow);
+    writeFileSync(join(dir, "same.py"), big);
+    writeFileSync(join(dir, "small.py"), "a = 1\n");
+    writeFileSync(join(dir, "tiny.py"), "b = 2\n");
+    writeFileSync(join(dir, "new.py"), "c = 3\n");
+    writeFileSync(join(dir, "other.py"), "d = 4\n");
+    const task: DelegateTask = {
+      id: "t",
+      title: "T",
+      instructions: "edit",
+      files: ["big.py", "same.py", "small.py", "tiny.py", "new.py", "other.py"],
+    };
+    const before = new Map<string, string | null>([
+      ["big.py", big],
+      ["same.py", big],
+      ["small.py", "a = 0\n"],
+      ["tiny.py", "b = 2\n"],
+      ["new.py", null],
+    ]);
+    const { text, seen } = await gatherJudgeEvidence([{ task, reply: "" }], undefined, dir, { before });
+    expect(text).toContain("### big.py (changed by this work: diff, 200 lines now)\n@@ -88,25 +88,25 @@\n");
+    expect(text).toContain(`\n-line 100 ${"x".repeat(20)}\n+line 100 CHANGED ${"x".repeat(20)}\n`);
+    expect(text).toContain("\n line 88 ");
+    expect(text).not.toContain("line 87 ");
+    expect(text).not.toContain("line 113 ");
+    expect(text).toContain("### same.py — unchanged by this work (200 lines, not shown)");
+    expect(text).toContain("### small.py (changed by this work, shown whole)\na = 1");
+    expect(text).toContain("### tiny.py (unchanged by this work)\nb = 2");
+    expect(text).toContain("### new.py (new file)\nc = 3");
+    expect(text).toContain("### other.py\nd = 4");
+    expect(text.length).toBeLessThan(bigNow.length);
+    expect(seen.get("big.py")).toBe(bigNow);
+    expect(seen.get("new.py")).toBe("c = 3\n");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("follows up on the round before in one session, with its <task>:<item> ids and only what changed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-follow-"));
+    writeFileSync(join(dir, "a.txt"), "one\n");
+    writeFileSync(join(dir, "c.txt"), "same\n");
+    writeFileSync(join(dir, "b.txt"), "two\n");
+    const t1: DelegateTask = { id: "t1", title: "1", instructions: "write a.txt and c.txt", files: ["a.txt", "c.txt"] };
+    const t2: DelegateTask = { id: "t2", title: "2", instructions: "write b.txt", files: ["b.txt"] };
+    const calls: Array<{ prompt: string; key: string | undefined }> = [];
+    const answers = [
+      '{"red":[{"id":"t1:a3","why":"wrong word"}],"pass":["t2:a2"]}',
+      '{"red":[],"pass":["t1:a3"]}',
+    ];
+    const complete: EscalationComplete = async (call) => {
+      calls.push({ prompt: call.prompt, key: call.cliSessionKey });
+      return { content: answers[calls.length - 1]! };
+    };
+    const session: JudgeSession = { key: "judge-k" };
+    const call = {
+      facts: { checkOutcomes: [], findings: [] },
+      contract: undefined,
+      workingDir: dir,
+      target: TARGET,
+      pricing: undefined,
+      complete,
+      signal: new AbortController().signal,
+      before: new Map<string, string | null>([["a.txt", null], ["b.txt", null], ["c.txt", null]]),
+      session,
+    };
+    const entry = (task: DelegateTask) => ({ task, items: buildAcceptanceChecklist(task, undefined), reply: "" });
+    const first = await judgeTasks({ ...call, entries: [entry(t1), entry(t2)] });
+    expect(first.get("t1")).toMatchObject({ green: false });
+    writeFileSync(join(dir, "a.txt"), "uno\n");
+    const second = await judgeTasks({ ...call, entries: [entry(t1)] });
+    expect(second.get("t1")).toMatchObject({ green: true });
+    expect(calls.map((c) => c.key)).toEqual(["judge-k", "judge-k"]);
+    expect(calls[1]!.prompt.startsWith(`${calls[0]!.prompt}\n\n## Follow-up: the workers retried\n`)).toBe(true);
+    const followUp = calls[1]!.prompt.slice(calls[0]!.prompt.length);
+    expect(followUp).toContain("### Task t1\nYour findings, which the worker was told to fix:\n- t1:a3: wrong word");
+    expect(followUp).toContain("- t1:a3: the task is done as instructed (its instructions are above)");
+    expect(followUp).toContain("### a.txt (changed since your ruling, shown whole)\nuno");
+    expect(followUp).toContain("### c.txt — unchanged since your ruling (1 line, not shown)");
+    expect(followUp).not.toContain("b.txt");
+    expect(followUp).not.toContain(JUDGE_RULES);
+    expect([...session.last!.asked]).toEqual(["t1", "t2"]);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -463,6 +584,32 @@ describe("a node closes only on a green list (ATO-944)", () => {
     );
     expect(sessions.length).toBeGreaterThan(0);
     expect(sessions.every((id) => id === "s-p")).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("runs both rounds in one CLI session, the retry as a follow-up to the first (k3c, 16-11-2026)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-cli-"));
+    const calls: Array<{ prompt: string; key: string | undefined; sid: string | undefined }> = [];
+    const d = deps(dir, async (call) => {
+      calls.push({ prompt: call.prompt, key: call.cliSessionKey, sid: call.sessionId });
+      return { content: JSON.stringify({ red: [{ id: "a2", why: "no score in a.txt" }], pass: [] }) };
+    });
+    await buildFusionDelegateTool(d).run(
+      { tasks: TASK },
+      { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+    );
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.key).toMatch(/^judge-/);
+    expect(calls[1]!.key).toBe(calls[0]!.key);
+    expect(calls.every((c) => c.sid === "s-p")).toBe(true);
+    expect(calls[0]!.prompt).toContain("### a.txt (new file)\nattempt 1");
+    expect(
+      calls[1]!.prompt.startsWith(`${calls[0]!.prompt}\n\n## Follow-up: the workers retried\n`),
+    ).toBe(true);
+    const followUp = calls[1]!.prompt.slice(calls[0]!.prompt.length);
+    expect(followUp).toContain("Your findings, which the worker was told to fix:\n- a2: no score in a.txt");
+    expect(followUp).toContain("### a.txt (changed since your ruling, shown whole)\nattempt 2");
+    expect(followUp).not.toContain("write a.txt with the score");
     rmSync(dir, { recursive: true, force: true });
   });
 

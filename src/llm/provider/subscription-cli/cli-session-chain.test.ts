@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { renderCloudTurn } from "../../../session/cloud-context.js";
 import {
+  JUDGE_FIXED_PART_END,
   planCliSessionTurn,
   REPEAT_NOTICE,
   restartCliSessionTurn,
@@ -108,6 +109,44 @@ describe("planCliSessionTurn", () => {
 
   it("leaves a prompt without the fixed part alone", () => {
     expect(planCliSessionTurn("BASE", "summarise this", undefined, ids())).toBeNull();
+  });
+});
+
+describe("planCliSessionTurn for a fusion judge call (k3c, 16-11-2026)", () => {
+  const RULES = "You are a strict judge.\nAnswer with JSON only.";
+  const CASE = "## The case to judge\nA worker says it finished the task below.\n## Evidence\n### a.py\nx = 1";
+  const judgePrompt = `${RULES}\n\n${CASE}`;
+
+  it("puts the judge's rules in the system prompt and sends the case", () => {
+    expect(planCliSessionTurn("BASE", judgePrompt, undefined, ids())).toEqual({
+      id: "id-1",
+      resume: false,
+      system: `BASE\n\n${RULES}`,
+      user: CASE,
+      input: CASE,
+    });
+  });
+
+  it("splits at whichever known heading comes first", () => {
+    const quoted = `${judgePrompt}\n### notes.md\n### capabilities\nworking_dir: /w`;
+    expect(planCliSessionTurn("BASE", quoted, undefined, ids())?.system).toBe(`BASE\n\n${RULES}`);
+    const agent = prompt(`${HEAD}\ntool_result[fs.read] (ok): ${JUDGE_FIXED_PART_END}`);
+    expect(planCliSessionTurn("BASE", agent, undefined, ids())?.system).toBe(`BASE\n\n${FIXED}`);
+  });
+
+  it("resumes the retry round with only its follow-up", () => {
+    const followUp = "\n\n## Follow-up: the workers retried\n### a.py (changed since your ruling, shown whole)\nx = 2";
+    const previous = answered(judgePrompt, '{"red":[{"id":"a1","why":"x is 1"}],"pass":[]}');
+    for (const options of [{}, { resumeAcrossRepair: true }]) {
+      const turn = planCliSessionTurn("BASE", `${judgePrompt}${followUp}`, previous, ids(), options);
+      expect(turn).toEqual({
+        id: previous.id,
+        resume: true,
+        system: previous.system,
+        user: `${CASE}${followUp}`,
+        input: followUp,
+      });
+    }
   });
 });
 

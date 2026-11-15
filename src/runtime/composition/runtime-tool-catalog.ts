@@ -761,7 +761,14 @@ export function registerRuntimeFusionAndReadScope(input: {
       // Escalation (ATO-942): one completion pinned to the configured
       // escalation provider — never the fallback chain, so it cannot
       // land on a model the operator did not pick for it.
-      escalationComplete: async ({ providerId, prompt, maxOutputTokens, signal, sessionId }) => {
+      escalationComplete: async ({
+        providerId,
+        prompt,
+        maxOutputTokens,
+        signal,
+        sessionId,
+        cliSessionKey,
+      }) => {
         const provider = providerRegistry.getProvider(providerId);
         if (provider === undefined) {
           throw new Error(`escalation provider ${providerId} is not configured`);
@@ -770,6 +777,9 @@ export function registerRuntimeFusionAndReadScope(input: {
           prompt,
           maxOutputTokens,
           signal,
+          // Only the judge's rounds name one: its retry round continues
+          // the vendor CLI session of the first (`cli-session-chain`).
+          ...(cliSessionKey === undefined ? {} : { sessionId: cliSessionKey }),
         });
         // These calls go straight to the provider, past the seam that
         // feeds the session's readout, so they are counted here on the

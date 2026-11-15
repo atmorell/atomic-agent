@@ -3,6 +3,7 @@ import {
   ApprovalDeniedError,
   requireApproval,
 } from "../../approval/dangerous-tool.js";
+import { randomUUID } from "node:crypto";
 import { resolve as resolvePath } from "node:path";
 import { isInside } from "../../approval/fanout-scope.js";
 import { resolveFanoutScope } from "./fanout-paths.js";
@@ -72,12 +73,14 @@ import {
 import {
   applyJudgeVerdict,
   buildAcceptanceChecklist,
+  judgeEvidencePaths,
   judgeSummary,
   judgeTasks,
   redItems,
   renderAcceptanceBlock,
   renderRedItems,
   renderRetryFindings,
+  type JudgeSession,
   type JudgeVerdict,
 } from "./judge.js";
 import type { DelegateTask } from "./delegate-args.js";
@@ -1189,6 +1192,15 @@ export function buildFusionDelegateTool(
         verifyArgs === undefined
           ? undefined
           : await snapshotFiles(ctx.workingDir, autoVerifyFiles);
+      // The judge is shown a changed file as a diff against this. Not on
+      // a resume: the carried tasks' files were written before it.
+      const judgeBefore: FileSnapshot | undefined =
+        judging && resume === undefined
+          ? await snapshotFiles(ctx.workingDir, judgeEvidencePaths(parsed.tasks, parsed.contract))
+          : undefined;
+      // Both of this call's judge rounds run in one CLI session: the retry
+      // round follows up on the first and reads it from cache.
+      const judgeSession: JudgeSession = { key: `judge-${randomUUID()}` };
       let results: WorkerTaskResult[];
       try {
         // A resume starts with what finished before the restart, and with
@@ -1446,6 +1458,8 @@ export function buildFusionDelegateTool(
             complete: sideComplete!,
             signal: ctx.signal,
             ...(originalRequest === undefined ? {} : { originalRequest }),
+            ...(judgeBefore === undefined ? {} : { before: judgeBefore }),
+            session: judgeSession,
           });
           for (const [taskId, verdict] of judged) {
             if (verdict.costUsd !== null && verdict.costUsd > 0) {

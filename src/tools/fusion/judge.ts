@@ -1,6 +1,9 @@
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
+import { structuredPatch } from "diff";
+import { JUDGE_FIXED_PART_END } from "../../llm/provider/subscription-cli/cli-session-chain.js";
 import { estimateUsageCostUsd } from "../../llm/provider/usage-cost.js";
+import type { FileSnapshot } from "./autoverify.js";
 import type { DelegateTask } from "./delegate-args.js";
 import { describeProvide, type DelegateContract } from "./contract.js";
 import type {
@@ -54,6 +57,15 @@ import type {
  *     read leaves the node unverified, never green.
  *  3. A red list re-runs the task once with the judge's findings; a list
  *     still red after that is reported as failed, item by item.
+ *
+ * What a judge call costs is mostly what it writes to the provider's
+ * cache (k3b/k3c, 16-11-2026: 0.39-0.43 of a Claude-only run in three
+ * calls). So the rules are one fixed text before `JUDGE_FIXED_PART_END`,
+ * which a vendor CLI keeps as its session's system prompt; a file the
+ * work changed is shown as a diff against its text from before the work
+ * (`gatherJudgeEvidence`); and the retry round is a follow-up to the
+ * first round's prompt in the same CLI session (`JudgeSession`), so the
+ * first round is read back from cache and only the changes are new.
  */
 
 export type AcceptanceItemKind =
@@ -101,6 +113,16 @@ export const JUDGE_RUN_CHARS = 1_500;
 export const JUDGE_EARLIER_RUN_CHARS = 400;
 /** How much of the user's original request the judge reads. */
 export const JUDGE_REQUEST_CHARS = 4_000;
+/**
+ * A changed or unchanged file up to this size is shown whole; a larger
+ * changed file as a diff, a larger unchanged one by name only.
+ */
+export const JUDGE_WHOLE_FILE_CHARS = 3_000;
+/**
+ * Lines of context around each change in a diff. Wide on purpose: a
+ * diff can hide what is missing, and the judge rules on omissions too.
+ */
+export const JUDGE_DIFF_CONTEXT_LINES = 12;
 /**
  * What makes an item fail. In ap3h (15-11-2026) the judge sent a working
  * package back for "why" comments, the import form and test thoroughness
@@ -317,6 +339,24 @@ function declaredPaths(task: DelegateTask, contract: DelegateContract | undefine
   ].filter((p, i, all) => all.indexOf(p) === i);
 }
 
+/**
+ * Every path the judge may read for these tasks: snapshot them before the
+ * work starts (`snapshotFiles`), so the judge is shown what changed.
+ */
+export function judgeEvidencePaths(
+  tasks: readonly DelegateTask[],
+  contract: DelegateContract | undefined,
+): string[] {
+  return tasks
+    .flatMap((task) => declaredPaths(task, contract))
+    .filter((p, i, all) => all.indexOf(p) === i);
+}
+
+/** A path as `snapshotFiles` keys it. */
+function snapshotKey(path: string, workingDir: string): string {
+  return relative(workingDir, absolute(path, workingDir)).split("\\").join("/");
+}
+
 /** The files the judge reads, clipped; the worker's reply only when there are none. */
 export async function gatherEvidence(
   task: DelegateTask,
@@ -327,6 +367,32 @@ export async function gatherEvidence(
   return gatherBatchEvidence([{ task, reply }], contract, workingDir);
 }
 
+/** Every file whole, as when there is nothing to compare with. */
+export async function gatherBatchEvidence(
+  entries: ReadonlyArray<{ task: DelegateTask; reply: string }>,
+  contract: DelegateContract | undefined,
+  workingDir: string,
+): Promise<string> {
+  return (await gatherJudgeEvidence(entries, contract, workingDir)).text;
+}
+
+/** What the evidence of a file is compared with (`gatherJudgeEvidence`). */
+export interface EvidenceBaseline {
+  /** The files' text before the work (`snapshotFiles`; `null`: absent). */
+  before?: ReadonlyMap<string, string | null>;
+  /**
+   * A follow-up round: the files' text as the judge read it last round.
+   * A path in here is compared with this instead of `before`.
+   */
+  read?: ReadonlyMap<string, string | null>;
+}
+
+export interface JudgeEvidence {
+  text: string;
+  /** Each file's text as read now, keyed like `snapshotFiles` (`null`: missing). */
+  seen: FileSnapshot;
+}
+
 /**
  * The evidence of one judge call over several tasks: every declared file
  * once, however many tasks name it (two tasks that both touch `models.py`
@@ -334,19 +400,25 @@ export async function gatherEvidence(
  * reply. All of it shares one budget, which grows by
  * `JUDGE_EVIDENCE_EXTRA_CHARS` for each task after the first, up to twice
  * the one-task budget.
+ *
+ * With a baseline a file is shown by what the work did to it: a new file
+ * whole; a changed file whole when short, else as a diff; an unchanged
+ * one whole when short, else by name only (`fileEvidence`). A path the
+ * baseline does not know is shown whole, as without one.
  */
-export async function gatherBatchEvidence(
+export async function gatherJudgeEvidence(
   entries: ReadonlyArray<{ task: DelegateTask; reply: string }>,
   contract: DelegateContract | undefined,
   workingDir: string,
-): Promise<string> {
+  baseline: EvidenceBaseline = {},
+): Promise<JudgeEvidence> {
   const single = entries.length === 1;
-  const seen = new Set<string>();
+  const keys = new Set<string>();
   const paths: string[] = [];
   for (const path of entries.flatMap((e) => declaredPaths(e.task, contract))) {
     const key = absolute(path, workingDir).toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (keys.has(key)) continue;
+    keys.add(key);
     paths.push(path);
   }
   const bodies = await Promise.all(
@@ -358,7 +430,8 @@ export async function gatherBatchEvidence(
       }
     }),
   );
-  const blocks: Array<{ head: string; body: string | undefined }> = [
+  const seen: FileSnapshot = new Map();
+  const blocks: EvidenceBlock[] = [
     ...entries
       .filter((e) => declaredPaths(e.task, contract).length === 0)
       .map((e) => ({
@@ -367,18 +440,24 @@ export async function gatherBatchEvidence(
           : `Task ${e.task.id} declared no files, so its reply is its deliverable. Judge what the reply contains, not what it says it did elsewhere.\n### reply of task ${e.task.id}`,
         body: e.reply,
       })),
-    ...paths.map((path, i) => ({ head: `### ${path}`, body: bodies[i] })),
+    ...paths.map((path, i) => {
+      const key = snapshotKey(path, workingDir);
+      const now = bodies[i];
+      seen.set(key, now ?? null);
+      return fileEvidence(path, now, key, baseline);
+    }),
   ];
   const budget = Math.min(
     2 * JUDGE_EVIDENCE_CHARS,
-    JUDGE_EVIDENCE_CHARS + JUDGE_EVIDENCE_EXTRA_CHARS * Math.max(0, entries.length - 1),
+    JUDGE_EVIDENCE_EXTRA_CHARS * Math.max(0, entries.length - 1) + JUDGE_EVIDENCE_CHARS,
   );
   const caps = shareEvidenceBudget(
     blocks.map((b) => b.body?.length ?? 0),
     budget,
   );
-  return blocks
+  const text = blocks
     .map((block, i) => {
+      if (block.bare === true) return block.head;
       if (block.body === undefined) return `${block.head}\n[missing]`;
       const cap = caps[i]!;
       const shown =
@@ -388,6 +467,65 @@ export async function gatherBatchEvidence(
       return `${block.head}\n${shown}`;
     })
     .join("\n\n");
+  return { text, seen };
+}
+
+interface EvidenceBlock {
+  head: string;
+  /** `undefined`: the file is missing. */
+  body: string | undefined;
+  /** Only the heading: the file is named, not shown. */
+  bare?: true;
+}
+
+/** One file as the judge reads it, by what the work did to it. */
+function fileEvidence(
+  path: string,
+  now: string | undefined,
+  key: string,
+  baseline: EvidenceBaseline,
+): EvidenceBlock {
+  if (now === undefined) return { head: `### ${path}`, body: undefined };
+  const followUp = baseline.read?.has(key) === true;
+  const reference = followUp ? baseline.read : baseline.before;
+  if (reference === undefined || !reference.has(key)) {
+    return { head: `### ${path}`, body: now };
+  }
+  const was = reference.get(key) ?? null;
+  const since = followUp ? "since your ruling" : "by this work";
+  if (was === null) {
+    return { head: `### ${path} (${followUp ? "new since your ruling" : "new file"})`, body: now };
+  }
+  const count = now.split("\n").length - (now.endsWith("\n") ? 1 : 0);
+  const lines = `${count} line${count === 1 ? "" : "s"}`;
+  if (was === now) {
+    // A follow-up does not show again what the judge has just read.
+    return followUp || now.length > JUDGE_WHOLE_FILE_CHARS
+      ? { head: `### ${path} — unchanged ${since} (${lines}, not shown)`, body: "", bare: true }
+      : { head: `### ${path} (unchanged ${since})`, body: now };
+  }
+  if (now.length <= JUDGE_WHOLE_FILE_CHARS) {
+    return { head: `### ${path} (changed ${since}, shown whole)`, body: now };
+  }
+  const diff = renderFileDiff(path, was, now);
+  return diff.length >= now.length
+    ? { head: `### ${path} (changed ${since}, shown whole)`, body: now }
+    : { head: `### ${path} (changed ${since}: diff, ${lines} now)`, body: diff };
+}
+
+/** The change from `was` to `now` as unified hunks, without file headers. */
+function renderFileDiff(path: string, was: string, now: string): string {
+  const patch = structuredPatch(path, path, was, now, undefined, undefined, {
+    context: JUDGE_DIFF_CONTEXT_LINES,
+  });
+  return patch.hunks
+    .map((hunk) =>
+      [
+        `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
+        ...hunk.lines,
+      ].join("\n"),
+    )
+    .join("\n");
 }
 
 /**
@@ -439,61 +577,91 @@ export interface JudgePromptTask {
 const RECORD_HEADING = "## Recorded by the runtime (";
 
 /**
- * The prompt of one judge call. One task reads as before; several share
- * one preamble, one copy of the user's request and one evidence block,
- * and each item is named `<task>:<item>` so the answer cannot mix them up.
- * The answer lists only the red items with a reason; the rest are named.
+ * The judge's rules: the same bytes in every judge call, one task or
+ * many, first round or follow-up, so a vendor CLI keeps them as the
+ * system prompt it reads from cache (`JUDGE_FIXED_PART_END`). Nothing
+ * here may depend on the case.
+ */
+export const JUDGE_RULES = [
+  "You are a strict acceptance judge. Workers say they finished the task or tasks in the case below. Do not trust them: find where the work does NOT meet each item. Rule on each task's items against that task's instructions, only from the evidence shown. If the evidence does not show an item is met, it is not met.",
+  JUDGE_SEVERITY_RULE,
+  "A step of process — running a command, its result, which files were written — is shown by the runtime's record for that task at the end of the case, not by the files.",
+  "When the case shows the user's original request, the tasks were briefed from it. Where that request fixes an exact name, message, output line, format or value for what a task builds, the work must match it character for character; the task's own wording does not override it. Rule on each task only for its part of the request.",
+  "How the evidence shows a file: a new file whole; a changed file whole when it is short, otherwise as a diff of what the work changed (`+` added, `-` removed, unmarked lines are context) — the parts of it the diff does not show are as they were before the work; an unchanged file whole when it is short, otherwise only by name. An item that needs a change the evidence does not show is not met.",
+  // Every defect at once: k3b's first round named only "Tilføjet", the
+  // retry fixed it, and the second round then failed the same item for
+  // argparse's exit 2, which had been there all along — a second round,
+  // a red task and a new delegation for one defect (16-11-2026). Each
+  // defect once: k3c's answers repeated one defect under every item it
+  // touched, and output is the dearest token there is.
+  `Answer with JSON only: {"red":[{"id":"<item id>","why":"one line: every defect in this item, joined by '; '"}],"pass":["<item id>"]} — every item to rule on in exactly one of the two lists; a reason only for a red item. Name all of a red item's defects now: the worker gets one retry, and a defect left out is found only after it. Name each defect once, under the first item it fails, in at most about 20 words; another item that fails for the same defect says only "same as <id>".`,
+].join("\n");
+
+function itemKey(qualified: boolean): (taskId: string, itemId: string) => string {
+  return (taskId, itemId) => (qualified ? `${taskId}:${itemId}` : itemId);
+}
+
+/** The items a task's judge rules on: those no script settled. */
+function judgedItems(t: JudgePromptTask): AcceptanceItem[] {
+  return t.items.filter((item) => !t.facts.some((fact) => fact.id === item.id));
+}
+
+function renderFacts(
+  t: JudgePromptTask,
+  key: (taskId: string, itemId: string) => string,
+): string[] {
+  return t.facts.length === 0
+    ? ["(none)"]
+    : t.facts.map((f) => `- ${key(t.task.id, f.id)}: ${f.pass ? "met" : "NOT met"} — ${f.why}`);
+}
+
+/**
+ * The prompt of one judge call: `JUDGE_RULES`, then the case after
+ * `JUDGE_FIXED_PART_END`. One task reads as before; several share one
+ * copy of the user's request and one evidence block, and each item is
+ * named `<task>:<item>` so the answer cannot mix them up. The answer
+ * lists only the red items with a reason; the rest are named.
  */
 export function renderJudgeCallPrompt(input: {
   tasks: readonly JudgePromptTask[];
   evidence: string;
   /** The user's original request, of which every task is one part. */
   originalRequest?: string;
+  /**
+   * Name items `<task>:<item>`; by default when there are several tasks.
+   * A follow-up keeps the form its first round used (`JudgeSession`).
+   */
+  qualified?: boolean;
 }): string {
   const many = input.tasks.length > 1;
-  const key = (taskId: string, itemId: string): string =>
-    many ? `${taskId}:${itemId}` : itemId;
+  const qualified = input.qualified ?? many;
+  const key = itemKey(qualified);
   const request = input.originalRequest?.trim() ?? "";
-  const withRecord = input.tasks.some((t) => t.record !== undefined);
   const taskBlock = (t: JudgePromptTask): string[] => {
-    const judged = t.items.filter((item) => !t.facts.some((fact) => fact.id === item.id));
-    const sub = many ? "###" : "##";
+    const sub = qualified ? "###" : "##";
     return [
-      many ? `## Task ${t.task.id}` : "## Task",
+      qualified ? `## Task ${t.task.id}` : "## Task",
       t.task.instructions.slice(0, 4_000),
       "",
       `${sub} Items to rule on`,
-      ...judged.map((item) => `- ${key(t.task.id, item.id)}: ${judgeItemText(item)}`),
+      ...judgedItems(t).map((item) => `- ${key(t.task.id, item.id)}: ${judgeItemText(item)}`),
       "",
       `${sub} Already established by scripts (for context; not yours to change)`,
-      ...(t.facts.length === 0
-        ? ["(none)"]
-        : t.facts.map(
-            (f) => `- ${key(t.task.id, f.id)}: ${f.pass ? "met" : "NOT met"} — ${f.why}`,
-          )),
+      ...renderFacts(t, key),
       "",
     ];
   };
-  const first = input.tasks[0]?.task.id ?? "t";
-  const [red, pass] = [key(first, "a1"), key(first, "a2")];
   return [
-    many
-      ? `You are a strict acceptance judge. Workers say they finished the ${input.tasks.length} tasks below, each one part of the same job. Do not trust them: find where the work does NOT meet each item. Rule on each task's items against that task's instructions, only from the evidence shown. If the evidence does not show an item is met, it is not met.`
-      : "You are a strict acceptance judge. A worker says it finished the task below. Do not trust it: find where the work does NOT meet each item. Rule only from the evidence shown. If the evidence does not show an item is met, it is not met.",
-    JUDGE_SEVERITY_RULE,
-    ...(withRecord
-      ? [
-          many
-            ? "A step of process — running a command, its result, which files were written — is shown by the runtime's record for that task at the end, not by the files."
-            : "A step of process — running a command, its result, which files were written — is shown by the runtime's record at the end, not by the files.",
-        ]
-      : []),
+    JUDGE_RULES,
+    "",
+    JUDGE_FIXED_PART_END.trimStart(),
+    (many
+      ? `Workers say they finished the ${input.tasks.length} tasks below, each one part of the same job.`
+      : "A worker says it finished the task below.") +
+      (qualified ? " An item's id is <task>:<item>." : ""),
     ...(request.length === 0
       ? []
       : [
-          many
-            ? "The tasks were briefed from the user's original request, shown first. Where that request fixes an exact name, message, output line, format or value for what a task builds, the work must match it character for character; the task's own wording does not override it. Rule on each task only for its part of the request."
-            : "The task was briefed from the user's original request, shown first. Where that request fixes an exact name, message, output line, format or value for what this task builds, the work must match it character for character; the task's own wording does not override it. Rule only on this task's part of the request.",
           "",
           many
             ? "## The user's original request (each task is one part of it)"
@@ -511,17 +679,95 @@ export function renderJudgeCallPrompt(input: {
       t.record === undefined
         ? []
         : [
-            many
+            qualified
               ? t.record.replace(RECORD_HEADING, `## Recorded by the runtime for task ${t.task.id} (`)
               : t.record,
             "",
           ],
     ),
-    // Every defect at once: k3b's first round named only "Tilføjet", the
-    // retry fixed it, and the second round then failed the same item for
-    // argparse's exit 2, which had been there all along — a second round,
-    // a red task and a new delegation for one defect (16-11-2026).
-    `Answer with JSON only: {"red":[{"id":"${red}","why":"one line: every defect in this item, joined by '; '"}],"pass":["${pass}"]} — every item to rule on in exactly one of the two lists; a reason only for a red item. Name all of a red item's defects now: the worker gets one retry, and a defect left out is found only after it.`,
+    "Answer now with the JSON only, in the form given above; use the item ids exactly as listed.",
+  ].join("\n");
+}
+
+/** A task in a follow-up round, with its ruling from the round before. */
+export interface JudgeFollowUpTask extends JudgePromptTask {
+  /** Absent: the task was not ruled on before (a script item was red). */
+  earlier?: JudgeVerdict;
+}
+
+/**
+ * What a retry round appends to the round before's prompt. The judge has
+ * read that round's case and given its answer in the same CLI session, so
+ * this shows only what is new: per task its findings, the items to rule
+ * on again and the scripts' results; the files as they changed since that
+ * ruling (`gatherJudgeEvidence` with `read`); the retry's record. It opens
+ * with a `## ` heading, so the session chain reads it as more of the case
+ * rather than a side text.
+ */
+export function renderJudgeFollowUp(input: {
+  tasks: readonly JudgeFollowUpTask[];
+  evidence: string;
+  qualified: boolean;
+}): string {
+  const key = itemKey(input.qualified);
+  const taskBlock = (t: JudgeFollowUpTask): string[] => {
+    const heading = input.qualified ? `### Task ${t.task.id}` : "### The task";
+    const items = judgedItems(t).map(
+      (item) => `- ${key(t.task.id, item.id)}: ${judgeItemText(item)}`,
+    );
+    if (t.earlier === undefined) {
+      return [
+        heading,
+        "Not ruled on by you before. Its instructions:",
+        t.task.instructions.slice(0, 4_000),
+        "",
+        "Items to rule on:",
+        ...items,
+        "",
+        "Established by scripts (not yours to change):",
+        ...renderFacts(t, key),
+        "",
+      ];
+    }
+    const findings = t.earlier.items.filter((v) => !v.pass && v.by === "judge");
+    return [
+      heading,
+      "Your findings, which the worker was told to fix:",
+      ...(findings.length === 0
+        ? ["(none)"]
+        : findings.map((v) => `- ${key(t.task.id, v.id)}: ${v.why}`)),
+      "",
+      "Items to rule on again:",
+      ...items,
+      "",
+      "Established by scripts after the retry (not yours to change):",
+      ...renderFacts(t, key),
+      "",
+    ];
+  };
+  return [
+    "",
+    "## Follow-up: the workers retried",
+    "Each task below was run once more, with the findings it was given. Rule again on the items listed under it, from the changes shown here and what you read above. An item you passed stays met unless a change breaks it; an item you failed is met only when a change fixes every defect you named in it.",
+    "",
+    ...input.tasks.flatMap(taskBlock),
+    "### Changes since your ruling",
+    input.evidence,
+    "",
+    ...input.tasks.flatMap((t) =>
+      t.record === undefined
+        ? []
+        : [
+            t.record.replace(
+              RECORD_HEADING,
+              input.qualified
+                ? `### Recorded by the runtime for task ${t.task.id} after the retry (`
+                : "### Recorded by the runtime after the retry (",
+            ),
+            "",
+          ],
+    ),
+    "Answer now with the JSON only, in the form given above, for the items to rule on again; use their ids exactly as listed.",
   ].join("\n");
 }
 
@@ -645,6 +891,30 @@ export async function judgeTask(input: JudgeCallInput & JudgeEntry): Promise<Jud
   return verdicts.get(task.id)!;
 }
 
+/** A round the judge answered, which the next round follows up on. */
+export interface JudgeRound {
+  /** The round's prompt as sent, without the judge's answer. */
+  prompt: string;
+  /** The files as the judge has read them, by `snapshotFiles` key. */
+  seen: FileSnapshot;
+  qualified: boolean;
+  /** The tasks the judge has ruled on. */
+  asked: ReadonlySet<string>;
+  verdicts: ReadonlyMap<string, JudgeVerdict>;
+}
+
+/**
+ * One `fusion.delegate` call's judge across its rounds. Every round sends
+ * `key` as the CLI session to continue (`cliSessionKey`), and a round after
+ * the first appends a follow-up (`renderJudgeFollowUp`) to the prompt of
+ * `last`, so the provider resumes the session and reads that round from
+ * cache. `judgeTasks` keeps `last`.
+ */
+export interface JudgeSession {
+  key?: string;
+  last?: JudgeRound;
+}
+
 /**
  * Rule on several tasks' lists in one judge call (one fan-out's round):
  * the preamble, the user's request and shared files are paid for once,
@@ -653,9 +923,17 @@ export async function judgeTask(input: JudgeCallInput & JudgeEntry): Promise<Jud
  * evenly over the tasks it asked. Never throws: a call that cannot run or
  * answer leaves every task it asked unverified. Verdicts come back in
  * the entries' order, keyed by task id.
+ *
+ * `before` is the declared files' text from before the work, so a file
+ * is shown by what the work did to it; `session` makes a later round a
+ * follow-up to the last one it answered.
  */
 export async function judgeTasks(
-  input: JudgeCallInput & { entries: readonly JudgeEntry[] },
+  input: JudgeCallInput & {
+    entries: readonly JudgeEntry[];
+    before?: FileSnapshot;
+    session?: JudgeSession;
+  },
 ): Promise<Map<string, JudgeVerdict>> {
   const settled = new Map<string, JudgeVerdict>();
   const asked: Array<{ entry: JudgeEntry; facts: ItemVerdict[]; needs: AcceptanceItem[] }> = [];
@@ -690,23 +968,43 @@ export async function judgeTasks(
     new Map(input.entries.map((e) => [e.task.id, settled.get(e.task.id)!]));
   if (asked.length === 0) return inOrder();
 
-  const evidence = await gatherBatchEvidence(
+  const last = input.session?.last;
+  const qualified = asked.length > 1 || last?.qualified === true;
+  const evidence = await gatherJudgeEvidence(
     asked.map((a) => a.entry),
     input.contract,
     input.workingDir,
+    {
+      ...(input.before === undefined ? {} : { before: input.before }),
+      ...(last === undefined ? {} : { read: last.seen }),
+    },
   );
-  const prompt = renderJudgeCallPrompt({
-    tasks: asked.map(({ entry, facts }) => ({
-      task: entry.task,
-      items: entry.items,
-      facts,
-      ...(entry.record === undefined
-        ? {}
-        : { record: renderRuntimeRecord(entry.record, input.workingDir) }),
-    })),
-    evidence,
-    ...(input.originalRequest === undefined ? {} : { originalRequest: input.originalRequest }),
-  });
+  const tasks = asked.map(({ entry, facts }): JudgePromptTask => ({
+    task: entry.task,
+    items: entry.items,
+    facts,
+    ...(entry.record === undefined
+      ? {}
+      : { record: renderRuntimeRecord(entry.record, input.workingDir) }),
+  }));
+  const prompt =
+    last === undefined
+      ? renderJudgeCallPrompt({
+          tasks,
+          evidence: evidence.text,
+          qualified,
+          ...(input.originalRequest === undefined
+            ? {}
+            : { originalRequest: input.originalRequest }),
+        })
+      : `${last.prompt}\n${renderJudgeFollowUp({
+          tasks: tasks.map((t) => {
+            const earlier = last.asked.has(t.task.id) ? last.verdicts.get(t.task.id) : undefined;
+            return earlier === undefined ? t : { ...t, earlier };
+          }),
+          evidence: evidence.text,
+          qualified,
+        })}`;
   let content: string | undefined;
   let costUsd: number | null = null;
   let failure: string | undefined;
@@ -716,6 +1014,7 @@ export async function judgeTasks(
       prompt,
       maxOutputTokens: JUDGE_MAX_OUTPUT_TOKENS * Math.min(asked.length, 3),
       signal: input.signal,
+      ...(input.session?.key === undefined ? {} : { cliSessionKey: input.session.key }),
     });
     content = answer.content;
     if (input.pricing !== undefined && answer.usage !== undefined) {
@@ -727,7 +1026,6 @@ export async function judgeTasks(
   const share = costUsd === null ? null : costUsd / asked.length;
   const ruled = content === undefined ? null : parseJudgeAnswer(content);
   if (ruled === null) failure ??= "the judge's answer could not be read";
-  const many = asked.length > 1;
   for (const { entry, facts, needs } of asked) {
     if (ruled === null) {
       settled.set(entry.task.id, {
@@ -739,13 +1037,26 @@ export async function judgeTasks(
       continue;
     }
     const judged = needs.map((item): ItemVerdict => {
-      const verdict = ruled.get(many ? `${entry.task.id}:${item.id}` : item.id);
+      const verdict = ruled.get(qualified ? `${entry.task.id}:${item.id}` : item.id);
       return verdict === undefined
         ? { id: item.id, pass: false, why: "the judge gave no verdict", by: "judge" }
         : { id: item.id, ...verdict, by: "judge" };
     });
     const all = [...facts, ...judged].sort((a, b) => itemOrder(a.id) - itemOrder(b.id));
     settled.set(entry.task.id, { green: all.every((v) => v.pass), items: all, costUsd: share });
+  }
+  if (input.session !== undefined && ruled !== null) {
+    const seen: FileSnapshot = new Map(last?.seen ?? []);
+    for (const [path, text] of evidence.seen) seen.set(path, text);
+    const verdicts = new Map(last?.verdicts ?? []);
+    for (const { entry } of asked) verdicts.set(entry.task.id, settled.get(entry.task.id)!);
+    input.session.last = {
+      prompt,
+      seen,
+      qualified,
+      asked: new Set([...(last?.asked ?? []), ...asked.map((a) => a.entry.task.id)]),
+      verdicts,
+    };
   }
   return inOrder();
 }
