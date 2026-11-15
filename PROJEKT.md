@@ -33,6 +33,13 @@ Se selv: `git log --oneline main..fusion-cache`
 - `localModels.managed.ubatchSize` (ny indstilling, standard `0`): sætter
   `--ubatch-size` på den styrede llama-server. `0` ændrer intet. Ligger i
   `src/config/local-models/` og `src/local-llm/server/daemon-lifecycle.ts`.
+- Kodevagten (`llm.runMode.fusion.questionProvider`, `questionMaxPerTurn`,
+  standard 3): orkestratorens spørgsmål går til den model først
+  (`src/agent/policies/question-escalation.ts`). `ANSWER:` → turen fortsætter
+  uden dig; `CANNOT:` → spørgsmålet kommer til dig. Hemmeligheder, smag og
+  godkendelse af noget uden retur er altid `CANNOT`. Sporet: `question_escalated`.
+  `turn_started.route` bærer model og effort for alle trin. Vælges i sys-win11
+  (8890, «Trin og effort»).
 - Forsøgt og forkastet: at fortsætte sessionen efter et afvist svar. Claude
   stolede på sit eget digtede resultat. Står som et commit og dets tilbagerulning.
 
