@@ -10,11 +10,14 @@ import { FUSION_WORKER_ID_PREFIX } from "../../session/fusion-worker-session.js"
 import { StructuredLogger, type LogRecord } from "../../tracing/structured-logger.js";
 import {
   buildAcceptanceChecklist,
+  gatherEvidence,
+  JUDGE_EVIDENCE_CHARS,
   JUDGE_REQUEST_CHARS,
   JUDGE_RUN_CHARS,
   judgeTask,
   parseJudgeAnswer,
   renderRuntimeRecord,
+  shareEvidenceBudget,
   type AcceptanceItem,
 } from "./judge.js";
 import {
@@ -30,6 +33,26 @@ const TARGET = { providerId: "cloud", model: "judge-model" };
 function answer(items: Array<{ id: string; pass: unknown; why?: string }>): EscalationComplete {
   return async () => ({ content: JSON.stringify({ items }) });
 }
+
+describe("judge evidence budget (ap3g)", () => {
+  it("shows small files whole and splits what is left between the large ones", () => {
+    expect(shareEvidenceBudget([100, 11_000, 50_000], 24_000)).toEqual([100, 11_000, 12_900]);
+    expect(shareEvidenceBudget([30_000, 30_000], 24_000)).toEqual([12_000, 12_000]);
+    expect(shareEvidenceBudget([], 24_000)).toEqual([]);
+  });
+
+  it("shows a one-file task's 12 000-char test file whole, not its first 6 000 chars", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-evidence-"));
+    const body = `def test_end():\n    assert True\n`.padStart(12_000, "#");
+    writeFileSync(join(dir, "test_opg.py"), body);
+    const task: DelegateTask = { id: "test", title: "tests", instructions: "write tests", files: ["test_opg.py"] };
+    const evidence = await gatherEvidence(task, undefined, "done", dir);
+    expect(evidence).toContain("def test_end():");
+    expect(evidence).not.toContain("clipped");
+    expect(evidence.length).toBeLessThanOrEqual(JUDGE_EVIDENCE_CHARS + 100);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
 
 describe("acceptance checklist (ATO-944)", () => {
   it("lists the task's checks, provides, files, deliverable and instructions", () => {

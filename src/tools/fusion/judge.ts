@@ -74,8 +74,13 @@ export interface AcceptanceItem {
 }
 
 const INSTRUCTIONS_ITEM_CHARS = 300;
-/** How much of each file, and of all files, the judge reads. */
-export const JUDGE_FILE_CHARS = 6_000;
+/**
+ * How much of all files the judge reads. The budget is shared out, not
+ * capped per file: a fixed 6 000-char cap per file clipped a one-file
+ * task's 12 000-char test file in half while 18 000 chars of budget sat
+ * unused, and the judge sent correct tests back as "not shown" (ap3g,
+ * 15-11-2026). See `shareEvidenceBudget`.
+ */
 export const JUDGE_EVIDENCE_CHARS = 24_000;
 /** Room for one short verdict per item. */
 export const JUDGE_MAX_OUTPUT_TOKENS = 1_200;
@@ -295,26 +300,52 @@ export async function gatherEvidence(
       reply.length > JUDGE_EVIDENCE_CHARS ? `${reply.slice(0, JUDGE_EVIDENCE_CHARS)}\n[… clipped]` : reply,
     ].join("\n");
   }
-  const parts: string[] = [];
-  let budget = JUDGE_EVIDENCE_CHARS;
-  for (const path of paths) {
-    if (budget <= 0) {
-      parts.push(`### ${path}\n[not shown: evidence budget spent]`);
-      continue;
-    }
-    let body: string;
-    try {
-      body = await readFile(absolute(path, workingDir), "utf8");
-    } catch {
-      parts.push(`### ${path}\n[missing]`);
-      continue;
-    }
-    const cap = Math.min(JUDGE_FILE_CHARS, budget);
-    const shown = body.length > cap ? `${body.slice(0, cap)}\n[… ${body.length - cap} more chars clipped]` : body;
-    budget -= shown.length;
-    parts.push(`### ${path}\n${shown}`);
-  }
-  return parts.join("\n\n");
+  const bodies = await Promise.all(
+    paths.map(async (path) => {
+      try {
+        return await readFile(absolute(path, workingDir), "utf8");
+      } catch {
+        return undefined;
+      }
+    }),
+  );
+  const caps = shareEvidenceBudget(
+    bodies.map((body) => body?.length ?? 0),
+    JUDGE_EVIDENCE_CHARS,
+  );
+  return paths
+    .map((path, i) => {
+      const body = bodies[i];
+      if (body === undefined) return `### ${path}\n[missing]`;
+      const cap = caps[i]!;
+      const shown =
+        body.length > cap
+          ? `${body.slice(0, cap)}\n[… ${body.length - cap} more chars clipped]`
+          : body;
+      return `### ${path}\n${shown}`;
+    })
+    .join("\n\n");
+}
+
+/**
+ * Each file's share of the evidence budget. Smallest first: a file that
+ * fits in an even share of what is left is shown whole, and what it did
+ * not use goes to the larger ones. Only files that together exceed the
+ * budget are clipped, and those evenly.
+ */
+export function shareEvidenceBudget(
+  lengths: readonly number[],
+  budget: number,
+): number[] {
+  const caps = lengths.map(() => 0);
+  const order = lengths.map((_, i) => i).sort((a, b) => lengths[a]! - lengths[b]!);
+  let left = budget;
+  order.forEach((index, rank) => {
+    const share = Math.floor(left / (order.length - rank));
+    caps[index] = Math.min(lengths[index]!, share);
+    left -= caps[index]!;
+  });
+  return caps;
 }
 
 export function renderJudgePrompt(input: {
