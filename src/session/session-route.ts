@@ -29,6 +29,13 @@ export interface RouteLeg {
   providerId: string;
   /** Model id, or `null` when the config names none. */
   model: string | null;
+  /**
+   * The effort it runs at, when the config sets one: a CLI leg's
+   * `--effort` in `subscriptionCli.extraArgs`, the worker leg's
+   * `workerReasoning`. Shown, never compared: the route-change note is
+   * about which model answers.
+   */
+  effort?: string;
 }
 
 export interface SessionRoute {
@@ -37,6 +44,16 @@ export interface SessionRoute {
   main: RouteLeg;
   /** Fusion's worker leg; `null` outside fusion. */
   worker: RouteLeg | null;
+  /**
+   * Fusion's helper models as configured for this turn, so a trace
+   * reader can show the hierarchy the turn could use: the advisor a
+   * stuck worker asks (only with `escalation: "advisor"`), the model
+   * the orchestrator's questions go to first (kodevagten) and the
+   * judge. Shown, never compared.
+   */
+  escalation?: RouteLeg;
+  question?: RouteLeg;
+  judge?: RouteLeg;
 }
 
 export interface ResolveTurnRouteInput {
@@ -67,18 +84,70 @@ export function resolveTurnRoute(input: ResolveTurnRouteInput): SessionRoute {
     input.fallbackOverrideId ??
     resolved.activeTextProvider;
   const mode = runMode.effective;
-  const main: RouteLeg = {
+  const main: RouteLeg = withEffort(resolved, {
     providerId: mainId,
     model:
       mode === "fusion" && mainId === runMode.orchestratorProviderId
         ? runMode.orchestratorModel
         : modelOf(resolved, mainId, input.managedModelId ?? null),
-  };
+  });
+  if (mode !== "fusion") return { mode, main, worker: null };
   const worker: RouteLeg | null =
-    mode === "fusion" && runMode.workerProviderId !== null
-      ? { providerId: runMode.workerProviderId, model: runMode.workerModel }
+    runMode.workerProviderId !== null
+      ? withEffort(
+          resolved,
+          { providerId: runMode.workerProviderId, model: runMode.workerModel },
+          runMode.workerReasoning,
+        )
       : null;
-  return { mode, main, worker };
+  const helper = (
+    target: { providerId: string; model: string | null } | null | undefined,
+  ): RouteLeg | undefined =>
+    target === null || target === undefined
+      ? undefined
+      : withEffort(resolved, { providerId: target.providerId, model: target.model });
+  const escalation =
+    runMode.escalation?.auto === true ? helper(runMode.escalation) : undefined;
+  const question = helper(runMode.question);
+  const judge = helper(runMode.judge);
+  return {
+    mode,
+    main,
+    worker,
+    ...(escalation === undefined ? {} : { escalation }),
+    ...(question === undefined ? {} : { question }),
+    ...(judge === undefined ? {} : { judge }),
+  };
+}
+
+/** `leg` with the effort its provider entry (or `fallback`) sets. */
+function withEffort(
+  resolved: ResolvedLlmConfig,
+  leg: RouteLeg,
+  fallback?: string,
+): RouteLeg {
+  const entry = resolved.providers.find((p) => p.id === leg.providerId);
+  const effort = cliEffort(entry?.subscriptionCli?.extraArgs) ?? fallback;
+  return effort === undefined ? leg : { ...leg, effort };
+}
+
+/** `--effort high` or `--effort=high` in a CLI's extra argv. */
+export function cliEffort(
+  args: readonly string[] | undefined,
+): string | undefined {
+  if (args === undefined) return undefined;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === "--effort") {
+      const next = args[i + 1];
+      return next !== undefined && next.length > 0 ? next : undefined;
+    }
+    if (arg.startsWith("--effort=")) {
+      const value = arg.slice("--effort=".length);
+      return value.length > 0 ? value : undefined;
+    }
+  }
+  return undefined;
 }
 
 function modelOf(

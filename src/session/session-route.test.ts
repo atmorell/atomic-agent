@@ -4,6 +4,7 @@ import type { ResolvedLlmConfig } from "../llm/provider/registry/provider-types.
 import { resolveRunMode } from "../llm/run-mode/resolve-run-mode.js";
 import {
   SESSION_ROUTE_METADATA_KEY,
+  cliEffort,
   readSessionRoute,
   resolveTurnRoute,
   sameSessionRoute,
@@ -116,5 +117,75 @@ describe("readSessionRoute", () => {
         [SESSION_ROUTE_METADATA_KEY]: { mode: "cloud", main: { providerId: "" } },
       }),
     ).toBeNull();
+  });
+});
+
+describe("the fusion hierarchy on the route", () => {
+  const resolved: ResolvedLlmConfig = {
+    activeTextProvider: "claude-cli",
+    activeEmbeddingProvider: "local-llama",
+    providers: [
+      { id: "local-llama", kind: "llama-server", url: "http://127.0.0.1:19091" },
+      {
+        id: "claude-cli",
+        kind: "subscription-cli",
+        defaultChatModel: "claude-opus-5-5",
+        subscriptionCli: { cli: "claude", extraArgs: ["--effort", "medium"] },
+      },
+      {
+        id: "claude-cli-high",
+        kind: "subscription-cli",
+        defaultChatModel: "claude-opus-5-5",
+        subscriptionCli: { cli: "claude", extraArgs: ["--effort=high"] },
+      },
+      {
+        id: "claude-fable",
+        kind: "subscription-cli",
+        defaultChatModel: "claude-fable-5-1",
+        subscriptionCli: { cli: "claude" },
+      },
+    ],
+    toolTransport: "auto",
+    runMode: {
+      mode: "fusion",
+      fusion: {
+        workerReasoning: "low",
+        escalation: "advisor",
+        escalationProvider: "claude-cli-high",
+        questionProvider: "claude-fable",
+        judge: "on",
+      },
+    },
+  };
+
+  it("names every leg with its effort", () => {
+    const r = route(resolved);
+    expect(r.main).toEqual({ providerId: "claude-cli", model: "claude-opus-5-5", effort: "medium" });
+    expect(r.worker).toEqual({ providerId: "local-llama", model: "qwen-3.5-4b", effort: "low" });
+    expect(r.escalation).toEqual({ providerId: "claude-cli-high", model: "claude-opus-5-5", effort: "high" });
+    expect(r.question).toEqual({ providerId: "claude-fable", model: "claude-fable-5-1" });
+    expect(r.judge).toEqual({ providerId: "claude-cli", model: "claude-opus-5-5", effort: "medium" });
+  });
+
+  it("leaves the advisor out while escalation is off, and compares only the answering legs", () => {
+    const off: ResolvedLlmConfig = {
+      ...resolved,
+      runMode: { mode: "fusion", fusion: { escalationProvider: "claude-cli-high" } },
+    };
+    const r = route(off);
+    expect(r.escalation).toBeUndefined();
+    expect(r.question).toBeUndefined();
+    expect(r.judge).toBeUndefined();
+    expect(sameSessionRoute(r, route(resolved))).toBe(true);
+  });
+});
+
+describe("cliEffort", () => {
+  it("reads both spellings and nothing else", () => {
+    expect(cliEffort(["--effort", "high"])).toBe("high");
+    expect(cliEffort(["--model", "x", "--effort=max"])).toBe("max");
+    expect(cliEffort(["--effort"])).toBeUndefined();
+    expect(cliEffort(undefined)).toBeUndefined();
+    expect(cliEffort(["--verbose"])).toBeUndefined();
   });
 });

@@ -1773,6 +1773,11 @@ async function runOneTask(
       notes: [...(result.notes ?? []), ...escalationNotes],
     };
   }
+  // The same fact as data, for a reader that draws the turn's
+  // hierarchy (sys-win11's Atomic panel) without parsing the notes.
+  if (escalations > 0) {
+    result = { ...result, escalations, escalatedTo: targetLabel };
+  }
 
   // A budget the orchestrator asked for and did not get is something it
   // has to know: it planned the task against the bigger number.

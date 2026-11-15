@@ -333,6 +333,12 @@ export interface WorkerTaskResult {
   model?: string;
   /** The role that picked `model`, when one did (ATO-943). */
   modelRole?: FusionRole;
+  /**
+   * How many times this worker asked the escalation model for advice,
+   * and that model, when it did (ATO-942). The notes say what for.
+   */
+  escalations?: number;
+  escalatedTo?: string;
 }
 
 export interface TaskCheckSummary {
