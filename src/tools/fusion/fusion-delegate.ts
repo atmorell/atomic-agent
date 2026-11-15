@@ -784,7 +784,7 @@ export function buildFusionDelegateTool(
         judging
           ? parsed.tasks.map((t) => [
               t.id,
-              buildAcceptanceChecklist(t, parsed.contract),
+              buildAcceptanceChecklist(t, parsed.contract, originalRequest),
             ])
           : [],
       );
@@ -1433,6 +1433,7 @@ export function buildFusionDelegateTool(
                     },
                   }
                 : {}),
+              ...(originalRequest === undefined ? {} : { originalRequest }),
             });
             if (verdict.costUsd !== null && verdict.costUsd > 0) {
               judgeSpendUsd += verdict.costUsd;

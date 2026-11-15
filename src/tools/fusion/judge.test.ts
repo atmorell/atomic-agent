@@ -10,6 +10,7 @@ import { FUSION_WORKER_ID_PREFIX } from "../../session/fusion-worker-session.js"
 import { StructuredLogger } from "../../tracing/structured-logger.js";
 import {
   buildAcceptanceChecklist,
+  JUDGE_REQUEST_CHARS,
   JUDGE_RUN_CHARS,
   judgeTask,
   parseJudgeAnswer,
@@ -52,6 +53,60 @@ describe("acceptance checklist (ATO-944)", () => {
     ]);
     expect(items[0]!.checkIndex).toBe(0);
     expect(items[1]!.judged).toBe(true);
+  });
+
+  it("adds the original request's item last, and only when there is a request (ap3b)", () => {
+    const task: DelegateTask = { id: "t", title: "T", instructions: "write cli.py" };
+    expect(buildAcceptanceChecklist(task, undefined).map((i) => i.kind)).toEqual(["instructions"]);
+    expect(buildAcceptanceChecklist(task, undefined, "  ").map((i) => i.kind)).toEqual(["instructions"]);
+    const items = buildAcceptanceChecklist(task, undefined, 'print "Tilfoejet <id>"');
+    expect(items.map((i) => [i.id, i.kind])).toEqual([
+      ["a1", "instructions"],
+      ["a2", "request"],
+    ]);
+    expect(items[1]!.judged).toBe(true);
+    expect(items[1]!.text).toContain("verbatim");
+  });
+});
+
+describe("the judge reads the user's original request (ap3b, 15-11-2026)", () => {
+  it("shows the request before the brief, only when there is one, cut at JUDGE_REQUEST_CHARS", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-req-"));
+    writeFileSync(join(dir, "cli.py"), 'print(f"Tilføjet {ny.id}")');
+    const task: DelegateTask = { id: "t", title: "T", instructions: "write the CLI", files: ["cli.py"] };
+    const request = 'Build a todo app. `add` prints exactly "Tilfoejet <id>: <tekst>".';
+    const prompts: string[] = [];
+    const base = {
+      task,
+      items: buildAcceptanceChecklist(task, undefined, request),
+      facts: { checkOutcomes: [], findings: [] },
+      reply: "",
+      contract: undefined,
+      workingDir: dir,
+      target: TARGET,
+      pricing: undefined,
+      complete: (async (call) => {
+        prompts.push(call.prompt);
+        return { content: '{"items":[{"id":"a2","pass":true,"why":"ok"},{"id":"a3","pass":false,"why":"Tilføjet, not Tilfoejet"}]}' };
+      }) as EscalationComplete,
+      signal: new AbortController().signal,
+    };
+    const verdict = await judgeTask({ ...base, originalRequest: request });
+    await judgeTask({ ...base, items: buildAcceptanceChecklist(task, undefined) });
+    await judgeTask({ ...base, originalRequest: `${"x".repeat(JUDGE_REQUEST_CHARS)}TAIL` });
+    expect(prompts[0]).toContain("## The user's original request (this task is one part of it)");
+    expect(prompts[0]).toContain(request);
+    expect(prompts[0]).toContain("character for character");
+    expect(prompts[0]!.indexOf("## The user's original request")).toBeLessThan(
+      prompts[0]!.indexOf("## Task"),
+    );
+    expect(prompts[0]).toMatch(/- a3: every exact name, message, output line/);
+    expect(verdict.green).toBe(false);
+    expect(verdict.items.find((i) => i.id === "a3")).toMatchObject({ pass: false, by: "judge" });
+    expect(prompts[1]).not.toContain("original request");
+    expect(prompts[2]).toContain("[…]");
+    expect(prompts[2]).not.toContain("TAIL");
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -309,6 +364,35 @@ describe("a node closes only on a green list (ATO-944)", () => {
     );
     expect(sessions.length).toBeGreaterThan(0);
     expect(sessions.every((id) => id === "s-p")).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("hands the judge and the brief's list the session's original request", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-oreq-"));
+    const prompts: string[] = [];
+    const d = deps(
+      dir,
+      async (call) => {
+        prompts.push(call.prompt);
+        return {
+          content: JSON.stringify({
+            items: [
+              { id: "a2", pass: true, why: "ok" },
+              { id: "a3", pass: true, why: "ok" },
+            ],
+          }),
+        };
+      },
+      { resolveOriginalRequest: () => 'Write a.txt; the score line reads "Point: <n>".' },
+    );
+    const result = await buildFusionDelegateTool(d).run(
+      { tasks: TASK },
+      { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+    );
+    expect(d.briefs[0]).toContain("[a3] every exact name, message, output line");
+    expect(prompts[0]).toContain('the score line reads "Point: <n>"');
+    const row = (result.details.tasks as Array<{ status: string }>)[0]!;
+    expect(row.status).toBe("ok");
     rmSync(dir, { recursive: true, force: true });
   });
 

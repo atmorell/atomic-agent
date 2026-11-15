@@ -38,6 +38,12 @@ import type {
  *     of stdout) and the files its write tools named. Without it an
  *     instruction such as "run pytest and report the result" could never
  *     be shown met, and correct work was re-run (ap2c, 15-11-2026).
+ *     It also reads the user's original request, which the worker's
+ *     brief already quotes, with one extra item: an exact name, message
+ *     or format the request fixes is used verbatim. Without it the judge
+ *     knew only the orchestrator's brief, which left out the exact
+ *     output lines, and "Tilføjet" for the requested "Tilfoejet" passed
+ *     (ap3b, 15-11-2026).
  *     The judge can only add red: it never turns a failed fact green.
  *     An item it gives no verdict for is red. An answer that cannot be
  *     read leaves the node unverified, never green.
@@ -50,7 +56,8 @@ export type AcceptanceItemKind =
   | "provide"
   | "file"
   | "deliverable"
-  | "instructions";
+  | "instructions"
+  | "request";
 
 export interface AcceptanceItem {
   id: string;
@@ -74,6 +81,8 @@ export const JUDGE_EVIDENCE_CHARS = 24_000;
 export const JUDGE_MAX_OUTPUT_TOKENS = 1_200;
 /** How much of the worker's last command's stdout the judge reads. */
 export const JUDGE_RUN_CHARS = 1_500;
+/** How much of the user's original request the judge reads. */
+export const JUDGE_REQUEST_CHARS = 4_000;
 
 /**
  * What the runtime itself recorded of a task's workers — not their
@@ -121,6 +130,8 @@ export function renderRuntimeRecord(record: JudgeRecord, workingDir: string): st
 export function buildAcceptanceChecklist(
   task: DelegateTask,
   contract: DelegateContract | undefined,
+  /** The user's original request; when there is one, its own item comes last. */
+  originalRequest?: string,
 ): AcceptanceItem[] {
   const items: AcceptanceItem[] = [];
   const next = (): string => `a${items.length + 1}`;
@@ -169,6 +180,14 @@ export function buildAcceptanceChecklist(
     text: `the task is done as instructed: ${instructions.length > INSTRUCTIONS_ITEM_CHARS ? `${instructions.slice(0, INSTRUCTIONS_ITEM_CHARS)}…` : instructions}`,
     judged: true,
   });
+  if (originalRequest !== undefined && originalRequest.trim().length > 0) {
+    items.push({
+      id: next(),
+      kind: "request",
+      text: "every exact name, message, output line, format and value that the user's original request fixes for this task's part is used verbatim, character for character — the task's own wording does not override it",
+      judged: true,
+    });
+  }
   return items;
 }
 
@@ -305,16 +324,29 @@ export function renderJudgePrompt(input: {
   evidence: string;
   /** `renderRuntimeRecord`'s text, when the runtime recorded the workers. */
   record?: string;
+  /** The user's original request, of which this task is one part. */
+  originalRequest?: string;
 }): string {
   const judged = input.items.filter(
     (item) => !input.facts.some((fact) => fact.id === item.id),
   );
+  const request = input.originalRequest?.trim() ?? "";
   return [
     "You are a strict acceptance judge. A worker says it finished the task below. Do not trust it: find where the work does NOT meet each item. Rule only from the evidence shown. If the evidence does not show an item is met, it is not met.",
     ...(input.record === undefined
       ? []
       : [
           "A step of process — running a command, its result, which files were written — is shown by the runtime's record at the end, not by the files.",
+        ]),
+    ...(request.length === 0
+      ? []
+      : [
+          "The task was briefed from the user's original request, shown first. Where that request fixes an exact name, message, output line, format or value for what this task builds, the work must match it character for character; the task's own wording does not override it. Rule only on this task's part of the request.",
+          "",
+          "## The user's original request (this task is one part of it)",
+          request.length > JUDGE_REQUEST_CHARS
+            ? `${request.slice(0, JUDGE_REQUEST_CHARS)}[…]`
+            : request,
         ]),
     "",
     "## Task",
@@ -387,6 +419,8 @@ export async function judgeTask(input: {
   signal: AbortSignal;
   /** The runtime's record of the task's workers, when it has one. */
   record?: JudgeRecord;
+  /** The user's original request, of which this task is one part. */
+  originalRequest?: string;
 }): Promise<JudgeVerdict> {
   const factVerdicts: ItemVerdict[] = [];
   for (const item of input.items) {
@@ -434,6 +468,9 @@ export async function judgeTask(input: {
         ...(input.record === undefined
           ? {}
           : { record: renderRuntimeRecord(input.record, input.workingDir) }),
+        ...(input.originalRequest === undefined
+          ? {}
+          : { originalRequest: input.originalRequest }),
       }),
       maxOutputTokens: JUDGE_MAX_OUTPUT_TOKENS,
       signal: input.signal,
