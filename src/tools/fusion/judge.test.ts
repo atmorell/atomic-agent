@@ -7,7 +7,7 @@ import type { RunTurnResult } from "../../agent/agent-loop.js";
 import type { ResolvedRunMode } from "../../llm/run-mode/index.js";
 import { createEmptySessionState } from "../../session/session-state.js";
 import { FUSION_WORKER_ID_PREFIX } from "../../session/fusion-worker-session.js";
-import { StructuredLogger } from "../../tracing/structured-logger.js";
+import { StructuredLogger, type LogRecord } from "../../tracing/structured-logger.js";
 import {
   buildAcceptanceChecklist,
   JUDGE_REQUEST_CHARS,
@@ -348,6 +348,26 @@ describe("a node closes only on a green list (ATO-944)", () => {
     const row = (result.details.tasks as Array<{ status: string; error?: string }>)[0]!;
     expect(row.status).toBe("failed");
     expect(row.error).toMatch(/^judge: 1 of 2 acceptance items not met after one retry — a2 no score in a\.txt/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("logs each round's verdict with its red items, the only record of why a task was sent back (ap3e)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-log-"));
+    const records: LogRecord[] = [];
+    const d = deps(
+      dir,
+      async () => ({ content: JSON.stringify({ items: [{ id: "a2", pass: false, why: "no score in a.txt" }] }) }),
+      { logger: new StructuredLogger({ level: "info", sinks: [(r) => records.push(r)] }) },
+    );
+    await buildFusionDelegateTool(d).run(
+      { tasks: TASK },
+      { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+    );
+    const verdicts = records.filter((r) => r.message === "fusion: judge verdict").map((r) => r.context);
+    expect(verdicts).toEqual([
+      expect.objectContaining({ taskId: "t", round: "first", green: false, red: ["a2 no score in a.txt"] }),
+      expect.objectContaining({ taskId: "t", round: "retry", green: false, red: ["a2 no score in a.txt"] }),
+    ]);
     rmSync(dir, { recursive: true, force: true });
   });
 

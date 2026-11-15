@@ -1446,7 +1446,28 @@ export function buildFusionDelegateTool(
           }
           return verdicts;
         };
+        // The judge's transcript is not kept: its red items in the log are
+        // the only record of why a task was sent back (ap3e, 15-11-2026).
+        const logVerdicts = (
+          round: "first" | "retry",
+          verdicts: ReadonlyMap<string, JudgeVerdict>,
+        ): void => {
+          for (const [taskId, verdict] of verdicts) {
+            deps.logger.info("fusion: judge verdict", {
+              taskId,
+              round,
+              green: verdict.green,
+              ...(verdict.unverified === undefined
+                ? {}
+                : { unverified: verdict.unverified.slice(0, 300) }),
+              red: redItems(verdict)
+                .slice(0, 8)
+                .map((v) => `${v.id} ${v.why}`.slice(0, 300)),
+            });
+          }
+        };
         const first = await judgeRows(results);
+        logVerdicts("first", first);
         const red = [...first].filter(
           ([, v]) => !v.green && v.unverified === undefined,
         );
@@ -1489,6 +1510,7 @@ export function buildFusionDelegateTool(
             (r) => evaluated.find((x) => x.id === r.id) ?? r,
           );
           second = await judgeRows(results.filter((r) => retryIds.has(r.id)));
+          logVerdicts("retry", second);
         }
         results = results.map((r) => {
           if (retryIds.has(r.id)) {
