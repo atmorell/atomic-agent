@@ -42,6 +42,8 @@ import { buildFusionDelegateTool, readSlotOccupancy, type FusionDelegateDeps } f
 import { confineReads } from "../../tools/read-scope/index.js";
 import { McpManager, buildMcpPromptGetTool, buildMcpPromptListTool, buildMcpResourceListTool, buildMcpResourceReadTool, buildMcpToolDescriptors, createMcpSamplingHandler, mergeMcpDescriptors, applyMcpToolNameRule, buildMcpToolNameRule } from "../../mcp/index.js";
 import { DEFAULT_TOOL_DESCRIPTORS } from "../../prompt/tool-descriptors.js";
+import { withAutoVerifyDelegate } from "../../prompt/fusion-delegate-autoverify.js";
+import { dispatchNestedToolCall } from "../../agent/dispatch/nested-tool-dispatch.js";
 import type { McpServerConfig } from "../../mcp/mcp-types.js";
 import { loadPluginMcpServers } from "../../plugins/plugin-mcp.js";
 import { createPluginMcpLiveStop } from "../../plugins/plugin-mcp-live.js";
@@ -480,9 +482,18 @@ export async function connectRuntimeMcpCatalog(input: {
   // The closure captures everything else (vision/memory/tasks gates,
   // baseline grammar, etc.) so `refreshMcp()` can re-run it after a
   // server is added or removed at runtime without touching the rest.
+  // Autoverify (lever F1): live like the fusion gate. Off, the catalog is
+  // the default one byte for byte; on, only `fusion.delegate` changes.
+  const autoVerifyOn = (): boolean => {
+    const mode = resolveCurrentRunMode();
+    return mode.effective === "fusion" && mode.autoVerify !== undefined;
+  };
   const rebuildToolDescriptorsFromMcp = (): readonly ToolDescriptor[] => {
     const liveMcpEnabled = mcpManager.listServerNames().length > 0;
-    const base = filterToolDescriptorsByConfig(DEFAULT_TOOL_DESCRIPTORS, {
+    const catalog = autoVerifyOn()
+      ? DEFAULT_TOOL_DESCRIPTORS.map(withAutoVerifyDelegate)
+      : DEFAULT_TOOL_DESCRIPTORS;
+    const base = filterToolDescriptorsByConfig(catalog, {
       browser: { enabled: config.browser.enabled },
       web: { search: { enabled: config.web.search.enabled } },
       // Live, like the fusion gate: offered while some leg of the
@@ -572,7 +583,7 @@ export async function connectRuntimeMcpCatalog(input: {
       resolveContextWindow?.(),
     );
   const liveDescriptorGates = (): string =>
-    `${resolveCurrentRunMode().effective === "fusion"}|${visionOnLiveRoute()}|${openRouterImageKey(getConfig()) !== undefined}|${toolSearchOn()}`;
+    `${resolveCurrentRunMode().effective === "fusion"}|${visionOnLiveRoute()}|${openRouterImageKey(getConfig()) !== undefined}|${toolSearchOn()}|${autoVerifyOn()}`;
   let cachedDescriptorGates = liveDescriptorGates();
   let cachedToolDescriptors = applyToolSearch(fullToolDescriptors, toolSearchOn());
   const rebuildToolDescriptors = (): readonly ToolDescriptor[] => {
@@ -818,6 +829,11 @@ export function registerRuntimeFusionAndReadScope(input: {
           signal: ctx.signal,
           config,
         }),
+      // Autoverify (lever F1, `llm.runMode.fusion.autoVerify`): the call's
+      // `verify` spec as a real `verify.run` call — the registry's own
+      // wrappers and the batch's dispatch steps, looked up at call time.
+      dispatchVerify: (args, ctx) =>
+        dispatchNestedToolCall({ registry: toolRegistry, tool: "verify.run", args, ctx }),
       logger,
     }),
   );

@@ -551,4 +551,26 @@ describe("loadConfig", () => {
     resetConfigCache();
     expect(loadConfig().paths.grammarsDir).toBe(override);
   });
+
+  it("ATOMIC_AGENT_FUSION_AUTOVERIFY overrides llm.runMode.fusion.autoVerify (lever F1)", () => {
+    writeUserConfigFileSync(getUserConfigPath(stateDir), {
+      ...USER_CONFIG_DEFAULTS,
+      llm: { ...USER_CONFIG_DEFAULTS.llm!, runMode: { fusion: { autoVerifyRounds: 3 } } } as typeof USER_CONFIG_DEFAULTS.llm,
+    });
+    resetConfigCache();
+    expect(loadConfig().llm?.runMode?.fusion?.autoVerify).toBeUndefined();
+    process.env.ATOMIC_AGENT_FUSION_AUTOVERIFY = "1";
+    try {
+      resetConfigCache();
+      expect(loadConfig().llm?.runMode?.fusion).toEqual({ autoVerifyRounds: 3, autoVerify: true });
+      process.env.ATOMIC_AGENT_FUSION_AUTOVERIFY = "0";
+      resetConfigCache();
+      expect(loadConfig().llm?.runMode?.fusion?.autoVerify).toBe(false);
+      // The file is never rewritten by the override.
+      const written = JSON.parse(readFileSync(getUserConfigPath(stateDir), "utf8"));
+      expect(written.llm.runMode.fusion).toEqual({ autoVerifyRounds: 3 });
+    } finally {
+      delete process.env.ATOMIC_AGENT_FUSION_AUTOVERIFY;
+    }
+  });
 });

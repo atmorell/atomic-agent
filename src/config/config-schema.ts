@@ -1098,6 +1098,9 @@ export interface UserConfigFile {
 // `off`) and `judgeProvider` (default the orchestrator leg), ATO-944.
 // Unversioned, additive: `llm.runMode.fusion.autoReplan` (0..5, default
 // 0 = off), ATO-941.
+// Unversioned, additive: `llm.runMode.fusion.autoVerify` (default false)
+// and `autoVerifyRounds` (0..5, default 2), lever F1. An older file has
+// neither and `fusion.delegate` keeps its schema without `verify`.
 // Unversioned, additive: `llm.runMode.fusion.roles` (`plan|build|review|
 // explore|utility` → provider id) and `mixLocalModels` (default false),
 // ATO-943. An older file has neither and runs every task on the worker leg.

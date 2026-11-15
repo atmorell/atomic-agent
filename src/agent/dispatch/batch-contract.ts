@@ -187,6 +187,14 @@ export interface BatchExecutionContext {
    * runtime installed at boot; `null` ⇒ no hooks for this batch.
    */
   toolHooks?: import("../../hooks/hook-engine.js").ToolHookEngine | null;
+  /**
+   * The args schema this session advertised for a tool, when the
+   * unknown-argument guard must check against it instead of the static
+   * default (a flag-gated argument such as autoverify's
+   * `fusion.delegate.verify`). Absent, or `undefined` for a tool ⇒ the
+   * static default schema.
+   */
+  argsSchemaFor?: (tool: string) => Record<string, unknown> | undefined;
 }
 
 export interface BatchExecutionResult {

@@ -1,7 +1,7 @@
 export type { ApprovalBarrierReport } from "./step/step-batch-policy.js";
 export { approvalBarrierSegments, emptyApprovalBarrierReport, formatApprovalBarrierNotice } from "./step/step-batch-policy.js";
 import { chatLinesOf, groundingTextsOf } from "../memory/name-grounding.js";
-import { createStepBatchPolicy, executeCallsInOrder, emptyApprovalBarrierReport, executeWithApprovalBarriers, formatApprovalBarrierNotice } from "./step/step-batch-policy.js";
+import { createStepBatchPolicy, executeCallsInOrder, emptyApprovalBarrierReport, executeWithApprovalBarriers, formatApprovalBarrierNotice, sessionArgsSchemaFor } from "./step/step-batch-policy.js";
 import { parseStepBatch, finishStepBatchRepair } from "./step/step-batch-parsing.js";
 import { prepareStepDispatch } from "./step/step-evidence.js";
 import { commitStepBatch } from "./step/step-commit.js";
@@ -293,6 +293,7 @@ async function executeStepInner(
       ? { maxWaveSize: batch.maxWaveSize }
       : {}),
     ...(loadedSkillNames.size > 0 ? { loadedSkillNames } : {}),
+    argsSchemaFor: sessionArgsSchemaFor(ctx.toolDescriptors),
     onCallFinished: ({ batchIndex, result, durationMs }) => {
       deps.onEvent?.({
         type: "tool_call_executed",

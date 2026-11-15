@@ -35,6 +35,12 @@ import type { BatchCallInput, BatchExecutionContext, BatchLoopSignal } from "./b
  */
 export function refuseBeforeDispatch(
   call: ToolCallPayload,
+  /**
+   * The args schema the session advertised for `call.tool` when a flag
+   * widened it (autoverify's `fusion.delegate.verify`); omitted, the
+   * static default schema decides.
+   */
+  argsSchema?: Record<string, unknown>,
 ): CompressedToolResult | null {
   const markers = findControlMarkers(call.args, call.tool);
   if (markers.length > 0) {
@@ -45,7 +51,7 @@ export function refuseBeforeDispatch(
       details: { corrupted: true, markers },
     });
   }
-  const unknown = findUnknownArguments(call.tool, call.args);
+  const unknown = findUnknownArguments(call.tool, call.args, argsSchema);
   if (unknown !== null) {
     return compressToolResult({
       tool: call.tool,

@@ -55,6 +55,31 @@ export function isFusionActive(
   return descriptors.some((d) => d.name === FUSION_DELEGATE_TOOL);
 }
 
+/** How a fan-out is checked, with autoverify off (the default). */
+const VERIFY_LINE =
+  "Before accepting a fan-out: `verify.syntax` on the declared files and `verify.run` on what the request must do.";
+
+/**
+ * The same line with autoverify on (lever F1, `llm.runMode.fusion.autoVerify`):
+ * the test command rides on the delegate call, so a green fan-out needs
+ * no verify call of the orchestrator's own.
+ */
+export const AUTOVERIFY_VERIFY_LINE =
+  "Before accepting a fan-out: pass the test command as `fusion.delegate`'s `verify` (run and repaired locally); call `verify.run` yourself only when its `autoverify:` line is not PASS.";
+
+/**
+ * Whether the mounted `fusion.delegate` takes `verify` — derived from the
+ * descriptor like `isFusionActive`, so the line cannot disagree with the
+ * schema the model is shown.
+ */
+export function isAutoVerifyMounted(
+  descriptors: readonly ToolDescriptor[],
+): boolean {
+  const schema = descriptors.find((d) => d.name === FUSION_DELEGATE_TOOL)
+    ?.argsJsonSchema as { properties?: Record<string, unknown> } | undefined;
+  return schema?.properties?.verify !== undefined;
+}
+
 /**
  * The behavioural lines — everything that is true on any machine.
  *
@@ -68,7 +93,7 @@ export const FUSION_GUIDANCE = [
   "You choose `maxWorkers` per call; prefer sending more parts over doing any yourself.",
   "Tools that change things are refused for you: the workers build, you do not — the mode working, not a fault.",
   "Keep the design and the judgement: read every reply against its brief.",
-  "Before accepting a fan-out: `verify.syntax` on the declared files and `verify.run` on what the request must do.",
+  VERIFY_LINE,
   "Rework goes back out: `failed`, `cancelled`, `needs_orchestrator` or not good enough is another `fusion.delegate` saying what was wrong and what good looks like.",
   // F43: the status table now says `replaced the user's file sales.csv
   // (2,401 → 9 lines)` on the row; this is what to do about it.
@@ -156,10 +181,15 @@ export function formatFusionMachineLine(
  */
 export function buildFusionGuidance(
   facts: FusionMachineFacts = NO_FUSION_MACHINE_FACTS,
+  options: { autoVerify?: boolean } = {},
 ): string {
   const machine = formatFusionMachineLine(facts);
   const roles = formatFusionRolesLine(facts);
-  return [FUSION_GUIDANCE, machine, roles]
+  const base =
+    options.autoVerify === true
+      ? FUSION_GUIDANCE.replace(VERIFY_LINE, AUTOVERIFY_VERIFY_LINE)
+      : FUSION_GUIDANCE;
+  return [base, machine, roles]
     .filter((line): line is string => line !== null)
     .join("\n");
 }

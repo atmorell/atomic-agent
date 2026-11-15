@@ -6,6 +6,7 @@ import type {
 import {
   FUSION_ROLES,
   DEFAULT_FUSION_ESCALATION_MAX_USD,
+  DEFAULT_FUSION_AUTOVERIFY_ROUNDS,
   DEFAULT_FUSION_CLOUD_WORKERS,
   DEFAULT_FUSION_WORKER_MAX_STEPS,
   DEFAULT_FUSION_WORKER_TIMEOUT_MS,
@@ -89,6 +90,12 @@ export type ResolvedRunMode = {
   roles?: FusionRoleModels;
   /** `llm.runMode.fusion.autoReplan`, present only when set above 0 (ATO-941). */
   autoReplan?: number;
+  /**
+   * `llm.runMode.fusion.autoVerify` (lever F1), present only when on:
+   * `fusion.delegate` takes a `verify` argument and repairs up to
+   * `maxRounds` times.
+   */
+  autoVerify?: { maxRounds: number };
   /**
    * `llm.runMode.fusion.isolation`, present only when `"worktree"`
    * (ATO-946): each task works in its own workspace and is merged back.
@@ -361,6 +368,9 @@ export function resolveRunMode(
     ...(roles === undefined ? {} : { roles }),
     ...(fusion?.autoReplan !== undefined && fusion.autoReplan > 0
       ? { autoReplan: fusion.autoReplan }
+      : {}),
+    ...(fusion?.autoVerify === true
+      ? { autoVerify: { maxRounds: fusion.autoVerifyRounds ?? DEFAULT_FUSION_AUTOVERIFY_ROUNDS } }
       : {}),
     ...(fusion?.isolation === "worktree" ? { isolation: "worktree" as const } : {}),
     ...resolveTaskTree(fusion?.taskTree),

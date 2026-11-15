@@ -443,3 +443,22 @@ describe("taskTree (ATO-940)", () => {
     }
   });
 });
+
+describe("autoVerify / autoVerifyRounds (lever F1)", () => {
+  it("are optional, off by default, and validated when present", () => {
+    expect(parseLlmRunModeConfig({ fusion: {} }, providers, "llm.runMode").fusion).toEqual({});
+    expect(
+      parseLlmRunModeConfig({ fusion: { autoVerify: true, autoVerifyRounds: 0 } }, providers, "llm.runMode")
+        .fusion,
+    ).toEqual({ autoVerify: true, autoVerifyRounds: 0 });
+    expect(() =>
+      parseLlmRunModeConfig({ fusion: { autoVerify: "yes" } }, providers, "llm.runMode"),
+    ).toThrow(/llm\.runMode\.fusion\.autoVerify/);
+    for (const bad of [-1, 6, 1.5, "2"]) {
+      expect(() =>
+        parseLlmRunModeConfig({ fusion: { autoVerifyRounds: bad } }, providers, "llm.runMode"),
+      ).toThrow(/llm\.runMode\.fusion\.autoVerifyRounds/);
+    }
+  });
+});
+

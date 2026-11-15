@@ -355,3 +355,21 @@ describe("resolveRunMode — task tree (ATO-940)", () => {
     ).toEqual({ maxDepth: 3, maxNodes: 10 });
   });
 });
+
+describe("autoVerify (lever F1)", () => {
+  it("is absent unless on; on, it carries the repair rounds (default 2)", () => {
+    expect(resolveRunMode(llm("openrouter", { mode: "fusion", fusion: {} })).autoVerify).toBeUndefined();
+    expect(
+      resolveRunMode(llm("openrouter", { mode: "fusion", fusion: { autoVerify: false, autoVerifyRounds: 4 } }))
+        .autoVerify,
+    ).toBeUndefined();
+    expect(
+      resolveRunMode(llm("openrouter", { mode: "fusion", fusion: { autoVerify: true } })).autoVerify,
+    ).toEqual({ maxRounds: 2 });
+    expect(
+      resolveRunMode(llm("openrouter", { mode: "fusion", fusion: { autoVerify: true, autoVerifyRounds: 0 } }))
+        .autoVerify,
+    ).toEqual({ maxRounds: 0 });
+  });
+});
+

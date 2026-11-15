@@ -157,6 +157,8 @@ const LLM_FUSION_KEYS: Record<keyof UserLlmFusionConfig, true> = {
   judge: true,
   judgeProvider: true,
   autoReplan: true,
+  autoVerify: true,
+  autoVerifyRounds: true,
   roles: true,
   mixLocalModels: true,
   isolation: true,

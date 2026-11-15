@@ -40,6 +40,16 @@ import {
   type WorkerRunnerDeps,
 } from "./worker-runner.js";
 import { describeReplan, renderReplanBlock } from "./replan.js";
+import {
+  diffStat,
+  readAutoVerifyArgs,
+  renderAutoVerifyBlock,
+  runAutoVerify,
+  snapshotFiles,
+  type AutoVerifyDispatch,
+  type AutoVerifyReport,
+  type FileSnapshot,
+} from "./autoverify.js";
 import { LocalLegHealth } from "./local-leg-health.js";
 import {
   renderMergeBlock,
@@ -128,6 +138,13 @@ export interface FusionDelegateDeps extends WorkerRunnerDeps {
    * have passed.
    */
   runChecks?: ContractCheckRunner;
+  /**
+   * Autoverify (lever F1): dispatches the call's `verify` spec as a
+   * `verify.run` call through the batch's own dispatch steps (approval,
+   * read scope, hooks, cancellation) — `dispatchNestedToolCall`, wired
+   * by the runtime. Absent, or with `autoVerify` off, `verify` is not run.
+   */
+  dispatchVerify?: AutoVerifyDispatch;
   /**
    * Pricing for the worker model on the worker leg, when any is known
    * (`resolveModelPricingFor`). Present, the status table header states
@@ -320,6 +337,17 @@ export function buildFusionDelegateTool(
       const delegateArgs = resumedFrom?.args ?? rawArgs;
       const parsed = parseDelegateArgs(delegateArgs);
       if (!parsed.ok) return error(parsed.error, { field: "tasks" });
+      // Autoverify (lever F1): only with the flag on and the dispatch
+      // wired; otherwise `verify` never reaches here (the unknown-key
+      // guard refuses it while the schema does not carry it).
+      const verifyRead =
+        mode.autoVerify === undefined || deps.dispatchVerify === undefined
+          ? undefined
+          : readAutoVerifyArgs(delegateArgs);
+      if (verifyRead !== undefined && !verifyRead.ok) {
+        return error(verifyRead.error, { field: "verify" });
+      }
+      const verifyArgs = verifyRead?.ok === true ? verifyRead.args : undefined;
       // What the run spent before the restart counts toward this turn's
       // cap: a resume is the same run, not a fresh allowance.
       if (resume !== undefined && resume.carriedSpendUsd > 0) {
@@ -1130,6 +1158,16 @@ export function buildFusionDelegateTool(
         return expanded;
       };
 
+      // Autoverify's diff stat is taken over the declared files and the
+      // contract's inputs, from before the first worker starts.
+      const autoVerifyFiles = [
+        ...parsed.tasks.flatMap((t) => t.files ?? []),
+        ...(parsed.contract?.inputs ?? []),
+      ];
+      const autoVerifyBefore: FileSnapshot | undefined =
+        verifyArgs === undefined
+          ? undefined
+          : await snapshotFiles(ctx.workingDir, autoVerifyFiles);
       let results: WorkerTaskResult[];
       try {
         // A resume starts with what finished before the restart, and with
@@ -1444,6 +1482,59 @@ export function buildFusionDelegateTool(
           return verdict === undefined ? r : applyJudgeVerdict(r, verdict, false);
         });
       }
+      // Autoverify (lever F1): the orchestrator's `verify` spec, run through
+      // verify.run's own dispatch; a failure goes to one local repair task
+      // and is verified again, up to the configured rounds. A fan-out the
+      // operator, a cap or a breaker stopped is not verified.
+      let autoverify: AutoVerifyReport | undefined;
+      if (verifyArgs !== undefined && autoVerifyBefore !== undefined) {
+        const snapshot = (): Promise<FileSnapshot> =>
+          snapshotFiles(ctx.workingDir, autoVerifyFiles);
+        const stoppedReason = ctx.signal.aborted
+          ? "cancelled"
+          : budgetStopped !== undefined
+            ? `stopped: ${budgetStopped.message}`
+            : trips.length > 0
+              ? "stopped: a failure breaker tripped"
+              : undefined;
+        autoverify =
+          stoppedReason !== undefined
+            ? {
+                status: "not_run",
+                rounds: 0,
+                exitCode: null,
+                excerpt: [],
+                diffstat: diffStat(autoVerifyBefore, await snapshot()),
+                repairs: [],
+                reason: stoppedReason,
+              }
+            : await runAutoVerify({
+                verifyArgs,
+                maxRepairs: mode.autoVerify?.maxRounds ?? 0,
+                dispatch: deps.dispatchVerify!,
+                ctx: { ...ctx, signal: runSignal },
+                tasks: parsed.tasks,
+                // The repair keeps input-file protection, nothing else of
+                // the contract: its owners and provides name other tasks.
+                repair: (task) =>
+                  runTasks(
+                    [task],
+                    parsed.contract?.inputs === undefined
+                      ? undefined
+                      : { inputs: parsed.contract.inputs },
+                    undefined,
+                  ),
+                stopReason: () => {
+                  const stop = budgetStop();
+                  if (stop !== undefined) return stop.message;
+                  return [...breakers.values()].some((b) => b.tripped() !== undefined)
+                    ? "a failure breaker tripped"
+                    : undefined;
+                },
+                before: autoVerifyBefore,
+                snapshot,
+              });
+      }
       // Automatic replanning (ATO-941): what did not close, from the
       // facts above, with the attempts it has left. The planner's next
       // step is held to `fusion.delegate` by the loop while any task is
@@ -1583,11 +1674,14 @@ export function buildFusionDelegateTool(
         trips.length === 0
           ? ""
           : `\n\nStopped: ${trips.map(describeTrip).join("; ")}. ${FAILURE_BREAKER_INSTRUCTION}`;
+      // First, so no cap on the table below can clip the verdict.
+      const autoverifyBlock =
+        autoverify === undefined ? "" : `${renderAutoVerifyBlock(autoverify)}\n\n`;
       return compressToolResult(
         {
           tool: FUSION_DELEGATE_TOOL,
           status: outcome === "all_failed" ? "error" : "ok",
-          output: `${formatDelegateOutput(results, deps.outputCharCap, {
+          output: `${autoverifyBlock}${formatDelegateOutput(results, deps.outputCharCap, {
             ...(contractLine === undefined ? {} : { contractLine }),
             spend,
             ...(ordered ? { waves: plan.waves } : {}),
@@ -1647,9 +1741,13 @@ export function buildFusionDelegateTool(
                     elapsedMs: budgetStopped.elapsedMs,
                   },
                 }),
+            ...(autoverify === undefined ? {} : { autoverify }),
           },
         },
-        { maxSummaryLength: deps.outputCharCap + 400, maxTailLines: 2000 },
+        {
+          maxSummaryLength: deps.outputCharCap + 400 + autoverifyBlock.length,
+          maxTailLines: 2000,
+        },
       );
     },
   };
