@@ -852,6 +852,9 @@ export function buildFusionDelegateTool(
       // Each task's last worker shell run, for autoverify's reuse of a
       // passing run of its own command (`reusableWorkerRun`).
       const workerCommands = new Map<string, WorkerCommandRun | undefined>();
+      // The paths each task's workers wrote through the file tools, a
+      // retry's added to the first attempt's: the judge's record of them.
+      const workerWrites = new Map<string, readonly string[]>();
       const guardOptionsFor = (
         providerId: string,
         pricing: WorkerPricing | undefined,
@@ -880,8 +883,11 @@ export function buildFusionDelegateTool(
             breaker.observe(result);
             checkpoint.onTaskFinished?.(result);
           },
-          onWorkerCommand: (taskId, run): void => {
+          onWorkerCommand: (taskId, run, written): void => {
             workerCommands.set(taskId, run);
+            workerWrites.set(taskId, [
+              ...new Set([...(workerWrites.get(taskId) ?? []), ...(written ?? [])]),
+            ]);
           },
         };
       };
@@ -1417,6 +1423,16 @@ export function buildFusionDelegateTool(
               pricing: judgePricing,
               complete: sideComplete!,
               signal: ctx.signal,
+              // A split task's subtasks ran under their own ids: no record
+              // then, rather than one that wrongly says "none".
+              ...(workerCommands.has(row.id)
+                ? {
+                    record: {
+                      run: workerCommands.get(row.id),
+                      written: workerWrites.get(row.id) ?? [],
+                    },
+                  }
+                : {}),
             });
             if (verdict.costUsd !== null && verdict.costUsd > 0) {
               judgeSpendUsd += verdict.costUsd;

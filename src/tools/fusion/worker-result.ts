@@ -134,6 +134,24 @@ export interface WorkerCommandRun {
 export const WORKER_COMMAND_OUTPUT_CHARS = 4000;
 
 /**
+ * The paths a successful write, edit, patch or restore call names in its
+ * details: `path`, and each `files[].path` of a patch. A shape this does
+ * not know adds nothing rather than a wrong path.
+ */
+export function writtenPathsOf(details: Record<string, unknown> | undefined): string[] {
+  if (details === undefined) return [];
+  const out: string[] = [];
+  if (typeof details.path === "string") out.push(details.path);
+  if (Array.isArray(details.files)) {
+    for (const file of details.files) {
+      const path = (file as { path?: unknown } | null)?.path;
+      if (typeof path === "string") out.push(path);
+    }
+  }
+  return out;
+}
+
+/**
  * Calls that leave the tree as it was, so a recorded run stays current
  * across them. Everything else — another tool, a job wait, a shell
  * command the result does not describe — counts as a change.
@@ -394,6 +412,16 @@ export class WorkerRunCollector {
   private readonly replaced: ReplacedInput[] = [];
   private lastRun: WorkerCommandRun | undefined;
   private startedJob = false;
+  private readonly written = new Set<string>();
+
+  /**
+   * The paths this worker's successful write, edit, patch and restore
+   * calls named, in first-write order. A shell command can write too;
+   * this is only what the file tools themselves record.
+   */
+  writtenPaths(): string[] {
+    return [...this.written];
+  }
 
   /**
    * The worker's last shell run that reached its exit, if any. None once
@@ -466,7 +494,10 @@ export class WorkerRunCollector {
       this.calls += 1;
       this.byTool[result.tool] = (this.byTool[result.tool] ?? 0) + 1;
       if (result.status === "error") this.errors += 1;
-      else if (FILE_WRITING_TOOLS.has(result.tool)) this.writes += 1;
+      else if (FILE_WRITING_TOOLS.has(result.tool)) {
+        this.writes += 1;
+        for (const path of writtenPathsOf(result.details)) this.written.add(path);
+      }
       if (resultCarriesApprovalRefusal(result.summary, result.details)) {
         this.approvalRefused = true;
         if (resultCarriesOperatorOnlyRefusal(result.summary, result.details)) {

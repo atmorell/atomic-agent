@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { estimateUsageCostUsd } from "../../llm/provider/usage-cost.js";
 import type { DelegateTask } from "./delegate-args.js";
 import { describeProvide, type DelegateContract } from "./contract.js";
@@ -8,7 +8,11 @@ import type {
   ContractFinding,
 } from "./contract-checks.js";
 import type { EscalationComplete } from "./escalation.js";
-import type { WorkerPricing, WorkerTaskResult } from "./worker-result.js";
+import type {
+  WorkerCommandRun,
+  WorkerPricing,
+  WorkerTaskResult,
+} from "./worker-result.js";
 
 /**
  * The trimmed judge (ATO-944): a node is closed by its acceptance list,
@@ -29,6 +33,11 @@ import type { WorkerPricing, WorkerTaskResult } from "./worker-result.js";
  *     judge in a fresh context — no worker transcript, no worker claims
  *     about files — reads the files themselves and rules on the items no
  *     script can (the deliverable, a provide's shape, the instructions).
+ *     Beside the files it reads the runtime's own record of the worker's
+ *     calls: its last command that reached an exit (line, exit code, end
+ *     of stdout) and the files its write tools named. Without it an
+ *     instruction such as "run pytest and report the result" could never
+ *     be shown met, and correct work was re-run (ap2c, 15-11-2026).
  *     The judge can only add red: it never turns a failed fact green.
  *     An item it gives no verdict for is red. An answer that cannot be
  *     read leaves the node unverified, never green.
@@ -63,6 +72,51 @@ export const JUDGE_FILE_CHARS = 6_000;
 export const JUDGE_EVIDENCE_CHARS = 24_000;
 /** Room for one short verdict per item. */
 export const JUDGE_MAX_OUTPUT_TOKENS = 1_200;
+/** How much of the worker's last command's stdout the judge reads. */
+export const JUDGE_RUN_CHARS = 1_500;
+
+/**
+ * What the runtime itself recorded of a task's workers — not their
+ * words: the last shell run that reached its exit, and the paths their
+ * write, edit, patch and restore calls named.
+ */
+export interface JudgeRecord {
+  run: WorkerCommandRun | undefined;
+  written: readonly string[];
+}
+
+export function renderRuntimeRecord(record: JudgeRecord, workingDir: string): string {
+  const shown = (path: string): string => {
+    const rel = relative(workingDir, path);
+    return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel)
+      ? rel.replace(/\\/g, "/")
+      : path;
+  };
+  const lines = [
+    "## Recorded by the runtime (facts, not the worker's words)",
+    record.written.length === 0
+      ? "- files written by the file tools: none"
+      : `- files written by the file tools: ${record.written.map(shown).join(", ")}`,
+  ];
+  const run = record.run;
+  if (run === undefined) {
+    lines.push("- last command run: none that reached its exit");
+    return lines.join("\n");
+  }
+  const flags = [
+    `exit ${run.exitCode ?? "unknown"}`,
+    ...(run.timedOut ? ["timed out"] : []),
+    ...(run.changedAfter ? ["files may have changed after it"] : []),
+  ];
+  lines.push(`- last command run: \`${run.lines[0] ?? ""}\` — ${flags.join(", ")}`);
+  const stdout = run.stdoutTail?.trimEnd();
+  if (stdout !== undefined && stdout.length > 0) {
+    const tail =
+      stdout.length > JUDGE_RUN_CHARS ? `[…]${stdout.slice(-JUDGE_RUN_CHARS)}` : stdout;
+    lines.push("  end of its stdout:", "```", tail, "```");
+  }
+  return lines.join("\n");
+}
 
 export function buildAcceptanceChecklist(
   task: DelegateTask,
@@ -249,12 +303,19 @@ export function renderJudgePrompt(input: {
   items: readonly AcceptanceItem[];
   facts: readonly ItemVerdict[];
   evidence: string;
+  /** `renderRuntimeRecord`'s text, when the runtime recorded the workers. */
+  record?: string;
 }): string {
   const judged = input.items.filter(
     (item) => !input.facts.some((fact) => fact.id === item.id),
   );
   return [
     "You are a strict acceptance judge. A worker says it finished the task below. Do not trust it: find where the work does NOT meet each item. Rule only from the evidence shown. If the evidence does not show an item is met, it is not met.",
+    ...(input.record === undefined
+      ? []
+      : [
+          "A step of process — running a command, its result, which files were written — is shown by the runtime's record at the end, not by the files.",
+        ]),
     "",
     "## Task",
     input.task.instructions.slice(0, 4_000),
@@ -270,6 +331,7 @@ export function renderJudgePrompt(input: {
     "## Evidence",
     input.evidence,
     "",
+    ...(input.record === undefined ? [] : [input.record, ""]),
     'Answer with JSON only: {"items":[{"id":"a1","pass":false,"why":"one line naming what is wrong or what shows it is met"}]} — one entry per item to rule on.',
   ].join("\n");
 }
@@ -323,6 +385,8 @@ export async function judgeTask(input: {
   pricing: WorkerPricing | undefined;
   complete: EscalationComplete;
   signal: AbortSignal;
+  /** The runtime's record of the task's workers, when it has one. */
+  record?: JudgeRecord;
 }): Promise<JudgeVerdict> {
   const factVerdicts: ItemVerdict[] = [];
   for (const item of input.items) {
@@ -367,6 +431,9 @@ export async function judgeTask(input: {
         items: input.items,
         facts: factVerdicts,
         evidence,
+        ...(input.record === undefined
+          ? {}
+          : { record: renderRuntimeRecord(input.record, input.workingDir) }),
       }),
       maxOutputTokens: JUDGE_MAX_OUTPUT_TOKENS,
       signal: input.signal,

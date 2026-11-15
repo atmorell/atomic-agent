@@ -10,8 +10,10 @@ import { FUSION_WORKER_ID_PREFIX } from "../../session/fusion-worker-session.js"
 import { StructuredLogger } from "../../tracing/structured-logger.js";
 import {
   buildAcceptanceChecklist,
+  JUDGE_RUN_CHARS,
   judgeTask,
   parseJudgeAnswer,
+  renderRuntimeRecord,
   type AcceptanceItem,
 } from "./judge.js";
 import {
@@ -124,6 +126,85 @@ describe("the judge cannot pass what the facts fail", () => {
   it("parses a JSON answer wrapped in prose", () => {
     const parsed = parseJudgeAnswer('Here: {"items":[{"id":"a1","pass":true,"why":"ok"}]} done');
     expect(parsed?.get("a1")).toEqual({ pass: true, why: "ok" });
+  });
+});
+
+describe("the judge reads the runtime's record of the run (ap2c, 15-11-2026)", () => {
+  const RUN = {
+    lines: ["python -m pytest -q"],
+    cwd: "/w",
+    exitCode: 0,
+    timedOut: false,
+    durationMs: 900,
+    stdoutTail: "....\n36 passed in 0.40s\n",
+    changedAfter: false,
+  };
+
+  it("shows the last command, its exit and stdout, and the written files relative to the folder", () => {
+    const dir = join(tmpdir(), "rec");
+    const text = renderRuntimeRecord(
+      { run: RUN, written: [join(dir, "tests", "test_regn.py"), join(tmpdir(), "elsewhere.txt")] },
+      dir,
+    );
+    expect(text).toContain("## Recorded by the runtime (facts, not the worker's words)");
+    expect(text).toContain("files written by the file tools: tests/test_regn.py, ");
+    expect(text).toContain(join(tmpdir(), "elsewhere.txt"));
+    expect(text).toContain("last command run: `python -m pytest -q` — exit 0");
+    expect(text).toContain("36 passed in 0.40s");
+  });
+
+  it("says plainly when no command reached its exit and nothing was written", () => {
+    const text = renderRuntimeRecord({ run: undefined, written: [] }, tmpdir());
+    expect(text).toContain("files written by the file tools: none");
+    expect(text).toContain("last command run: none that reached its exit");
+  });
+
+  it("keeps the end of a long stdout and flags a timeout", () => {
+    const text = renderRuntimeRecord(
+      { run: { ...RUN, timedOut: true, stdoutTail: `${"x".repeat(5_000)}END` }, written: [] },
+      tmpdir(),
+    );
+    expect(text).toContain("exit 0, timed out");
+    expect(text).toContain("[…]");
+    expect(text).toContain("END");
+    expect(text.length).toBeLessThan(JUDGE_RUN_CHARS + 400);
+  });
+
+  it("puts the record in the judge's prompt only when there is one", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-r-"));
+    writeFileSync(join(dir, "a.txt"), "hello");
+    const task: DelegateTask = {
+      id: "t",
+      title: "T",
+      instructions: "write a.txt, then run python -m pytest -q and report the result",
+      files: ["a.txt"],
+    };
+    const prompts: string[] = [];
+    const base = {
+      task,
+      items: buildAcceptanceChecklist(task, undefined),
+      facts: { checkOutcomes: [], findings: [] },
+      reply: "",
+      contract: undefined,
+      workingDir: dir,
+      target: TARGET,
+      pricing: undefined,
+      complete: (async (call) => {
+        prompts.push(call.prompt);
+        return { content: '{"items":[{"id":"a2","pass":true,"why":"ok"}]}' };
+      }) as EscalationComplete,
+      signal: new AbortController().signal,
+    };
+    await judgeTask(base);
+    await judgeTask({ ...base, record: { run: RUN, written: [join(dir, "a.txt")] } });
+    expect(prompts[0]).not.toContain("Recorded by the runtime");
+    expect(prompts[1]).toContain("shown by the runtime's record");
+    expect(prompts[1]).toContain("files written by the file tools: a.txt");
+    expect(prompts[1]).toContain("36 passed");
+    expect(prompts[1]!.indexOf("## Evidence")).toBeLessThan(
+      prompts[1]!.indexOf("## Recorded by the runtime"),
+    );
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -249,6 +330,77 @@ describe("a node closes only on a green list (ATO-944)", () => {
     const row = (result.details.tasks as Array<{ status: string; notes?: string[] }>)[0]!;
     expect(row.status).toBe("ok");
     expect(row.notes?.join(" ")).toContain("judge: all 2 acceptance items green after one retry");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("hands the judge each attempt's runtime record: the retry's run, both attempts' writes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-rec-"));
+    const prompts: string[] = [];
+    const d = deps(dir, async (call) => {
+      prompts.push(call.prompt);
+      return {
+        content: JSON.stringify({
+          items: [{ id: "a2", pass: prompts.length > 1, why: "see record" }],
+        }),
+      };
+    });
+    let runs = 0;
+    d.runTurn = async (_session, _message, options) => {
+      runs += 1;
+      const file = runs === 1 ? "a.txt" : "b.txt";
+      writeFileSync(join(dir, file), `attempt ${runs}`);
+      const executed = (result: Record<string, unknown>): void =>
+        options.eventHook?.({
+          type: "llm_event",
+          event: { type: "tool_call_executed", result, batchIndex: 0, batchSize: 1 } as never,
+        });
+      executed({
+        tool: "os.fs.write",
+        status: "ok",
+        summary: `wrote ${file}`,
+        details: { path: join(dir, file) },
+        truncated: false,
+      });
+      if (runs === 2) {
+        const text = "$ python -m pytest -q\nexit: 0\n36 passed in 0.40s";
+        executed({
+          tool: "os.shell.run",
+          status: "ok",
+          summary: text,
+          fullOutput: text,
+          details: {
+            cmd: "python",
+            args: ["-m", "pytest", "-q"],
+            rawArgs: ["-m", "pytest", "-q"],
+            cwd: dir,
+            shell: false,
+            exitCode: 0,
+            durationMs: 900,
+            timedOut: false,
+            truncated: false,
+            outputStreams: "stdout",
+          },
+          truncated: false,
+        });
+      }
+      return {
+        session: createEmptySessionState({ id: "s-w", workingDir: dir }),
+        reason: "reply",
+        stepCount: 1,
+      } as RunTurnResult;
+    };
+    const result = await buildFusionDelegateTool(d).run(
+      { tasks: TASK },
+      { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+    );
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain("files written by the file tools: a.txt");
+    expect(prompts[0]).toContain("last command run: none that reached its exit");
+    expect(prompts[1]).toContain("files written by the file tools: a.txt, b.txt");
+    expect(prompts[1]).toContain("last command run: `python -m pytest -q` — exit 0");
+    expect(prompts[1]).toContain("36 passed in 0.40s");
+    const row = (result.details.tasks as Array<{ status: string }>)[0]!;
+    expect(row.status).toBe("ok");
     rmSync(dir, { recursive: true, force: true });
   });
 

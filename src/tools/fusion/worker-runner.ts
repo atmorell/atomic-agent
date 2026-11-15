@@ -638,7 +638,15 @@ export interface RunWorkerTasksOptions {
    * when it ran none. Autoverify reuses a passing run of its own command
    * from it (`reusableWorkerRun`).
    */
-  onWorkerCommand?: (taskId: string, run: WorkerCommandRun | undefined) => void;
+  onWorkerCommand?: (
+    taskId: string,
+    run: WorkerCommandRun | undefined,
+    /**
+     * The paths the task's workers (a replacement's too) wrote through
+     * the file tools: the judge reads them as the runtime's record.
+     */
+    written?: readonly string[],
+  ) => void;
 }
 
 /**
@@ -1944,7 +1952,13 @@ async function runOneTask(
     summary: summarise(result),
   });
   try {
-    options.onWorkerCommand?.(task.id, commandSource.lastCommand());
+    const written = [
+      ...new Set([
+        ...collector.writtenPaths(),
+        ...(commandSource === collector ? [] : commandSource.writtenPaths()),
+      ]),
+    ];
+    options.onWorkerCommand?.(task.id, commandSource.lastCommand(), written);
   } catch {
     // A listener's fault must not lose the task's row.
   }

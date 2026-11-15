@@ -25,6 +25,7 @@ import {
   unservedWorkerHint,
   workerFailureHint,
   workerHintNoFirstToken,
+  writtenPathsOf,
   type WorkerTaskResult,
 } from "./worker-result.js";
 import {
@@ -323,6 +324,25 @@ function shellRun(
     },
   };
 }
+
+describe("the paths a worker wrote (the judge's record)", () => {
+  it("reads a single path and a patch's file list, and nothing else", () => {
+    expect(writtenPathsOf({ path: "/w/a.txt" })).toEqual(["/w/a.txt"]);
+    expect(writtenPathsOf({ files: [{ path: "/w/b.py" }, { path: 3 }, null] })).toEqual(["/w/b.py"]);
+    expect(writtenPathsOf({})).toEqual([]);
+    expect(writtenPathsOf(undefined)).toEqual([]);
+  });
+
+  it("keeps each successful write once and skips failed ones and other tools", () => {
+    const c = new WorkerRunCollector();
+    c.observe(toolExecuted("os.fs.write", "ok", "wrote", { path: "/w/a.txt" }));
+    c.observe(toolExecuted("os.fs.edit", "ok", "edited", { path: "/w/a.txt" }));
+    c.observe(toolExecuted("os.fs.patch", "ok", "patched", { files: [{ path: "/w/b.py" }] }));
+    c.observe(toolExecuted("os.fs.write", "error", "denied", { path: "/w/c.txt" }));
+    c.observe(toolExecuted("os.fs.read", "ok", "read", { path: "/w/d.txt" }));
+    expect(c.writtenPaths()).toEqual(["/w/a.txt", "/w/b.py"]);
+  });
+});
 
 describe("the worker's last command run (autoverify reuse)", () => {
   it("reads the line, directory, exit, duration and stdout of a run", () => {
