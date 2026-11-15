@@ -155,6 +155,22 @@ describe("the judge fails defects, not taste (ap3h, 15-11-2026)", () => {
   });
 });
 
+describe("the judge names every defect in its first round (k3b, 16-11-2026)", () => {
+  it("asks for all of a red item's defects, since the worker gets one retry", () => {
+    const task: DelegateTask = { id: "t", title: "T", instructions: "write cli.py", files: ["cli.py"] };
+    const prompt = renderJudgePrompt({
+      task,
+      items: buildAcceptanceChecklist(task, undefined),
+      facts: [],
+      evidence: "cli.py: print('Tilføjet')",
+    });
+    const answer = prompt.slice(prompt.lastIndexOf("Answer with JSON only"));
+    expect(answer).toContain("every defect in this item, joined by '; '");
+    expect(answer).toContain("Name all of a red item's defects now");
+    expect(answer).not.toContain("what is wrong");
+  });
+});
+
 describe("the judge cannot pass what the facts fail", () => {
   const dir = mkdtempSync(join(tmpdir(), "judge-"));
   const task: DelegateTask = { id: "t", title: "T", instructions: "write a.txt", files: ["a.txt"] };

@@ -517,7 +517,11 @@ export function renderJudgeCallPrompt(input: {
             "",
           ],
     ),
-    `Answer with JSON only: {"red":[{"id":"${red}","why":"one line: what is wrong"}],"pass":["${pass}"]} — every item to rule on in exactly one of the two lists; a reason only for a red item.`,
+    // Every defect at once: k3b's first round named only "Tilføjet", the
+    // retry fixed it, and the second round then failed the same item for
+    // argparse's exit 2, which had been there all along — a second round,
+    // a red task and a new delegation for one defect (16-11-2026).
+    `Answer with JSON only: {"red":[{"id":"${red}","why":"one line: every defect in this item, joined by '; '"}],"pass":["${pass}"]} — every item to rule on in exactly one of the two lists; a reason only for a red item. Name all of a red item's defects now: the worker gets one retry, and a defect left out is found only after it.`,
   ].join("\n");
 }
 
