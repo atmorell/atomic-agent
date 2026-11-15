@@ -81,6 +81,8 @@ describe("config shape map (ATO-764)", () => {
       "workerProvider",
       "workerModel",
       "escalationProvider",
+      "questionProvider",
+      "questionMaxPerTurn",
       "judgeProvider",
       "roles",
     ]) {

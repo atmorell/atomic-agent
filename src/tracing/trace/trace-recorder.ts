@@ -357,6 +357,22 @@ export function createTraceRecorder(
           reason: inner.reason,
         });
         return;
+      case "question_escalated":
+        push({
+          type: "question_escalated",
+          seq: nextSeq(),
+          sessionId,
+          ts: now(),
+          turnIndex: currentTurnIndex,
+          stepIndex: inner.stepIndex,
+          outcome: inner.outcome,
+          providerId: inner.providerId,
+          model: inner.model,
+          costUsd: inner.costUsd,
+          questionChars: inner.questionChars,
+          detail: inner.detail,
+        });
+        return;
       case "answer_continued":
         push({
           type: "answer_continued",

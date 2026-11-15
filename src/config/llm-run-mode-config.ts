@@ -147,6 +147,19 @@ export type UserLlmFusionConfig = {
   /** Spend cap for one escalation, in USD. Default 0.25. */
   escalationMaxUsd?: number;
   /**
+   * The question escalation (kodevagten). When the orchestrator would end
+   * a fusion turn by asking the person a question, the question goes to
+   * this provider first: it answers from the request and the work so far
+   * and the turn goes on, or says it cannot (a preference only the person
+   * holds, an approval for something that cannot be undone) and the
+   * question reaches the person as before. Must name a configured
+   * provider that is neither the worker nor the orchestrator leg.
+   * Unset (default): off, every question goes to the person.
+   */
+  questionProvider?: string;
+  /** Most questions one turn may send there (0..10). Default 3. */
+  questionMaxPerTurn?: number;
+  /**
    * The trimmed judge (ATO-944). `"on"`: every task gets an acceptance
    * checklist in its brief, built from the contract (checks, provides,
    * declared files) plus its deliverable; after the work, failed facts
@@ -321,6 +334,9 @@ export const DEFAULT_FUSION_REVIEW_STALL_STEPS = 6;
 export const FUSION_REVIEW_STALL_STEPS_MAX = 1000;
 /** Upper bound on `autoReplan`: replans per task in one turn. */
 export const FUSION_AUTO_REPLAN_MAX = 5;
+/** Questions one turn may send to `questionProvider`: default and upper bound. */
+export const DEFAULT_FUSION_QUESTION_MAX_PER_TURN = 3;
+export const FUSION_QUESTION_MAX_PER_TURN_MAX = 10;
 /** Repair rounds after a failed autoverify: default and upper bound. */
 export const DEFAULT_FUSION_AUTOVERIFY_ROUNDS = 2;
 export const FUSION_AUTOVERIFY_ROUNDS_MAX = 5;
@@ -563,6 +579,21 @@ function parseFusion(
       1_000,
     );
   }
+  if (obj.questionProvider !== undefined) {
+    out.questionProvider = parseLegProviderId(
+      obj.questionProvider,
+      providers,
+      `${field}.questionProvider`,
+    );
+  }
+  if (obj.questionMaxPerTurn !== undefined) {
+    out.questionMaxPerTurn = parseBoundedInt(
+      obj.questionMaxPerTurn,
+      `${field}.questionMaxPerTurn`,
+      0,
+      FUSION_QUESTION_MAX_PER_TURN_MAX,
+    );
+  }
   if (obj.judge !== undefined && !isSetAsideString(obj.judge, FUSION_JUDGE_MODES, `${field}.judge`, undefined)) {
     if (obj.judge !== "off" && obj.judge !== "on") {
       throw new ConfigValidationError(`${field}.judge`, "expected off|on");
@@ -766,6 +797,7 @@ export function scrubRunModeProviderPins(
     roles,
     escalationProvider,
     judgeProvider,
+    questionProvider,
     ...rest
   } = runMode.fusion;
   const keepOrchestrator = orchestratorProvider !== removedId;
@@ -783,12 +815,14 @@ export function scrubRunModeProviderPins(
     Object.keys(keptRoles ?? {}).length !== Object.keys(roles).length;
   const keepEscalation = escalationProvider !== removedId;
   const keepJudge = judgeProvider !== removedId;
+  const keepQuestion = questionProvider !== removedId;
   if (
     keepOrchestrator &&
     keepWorker &&
     !rolesChanged &&
     keepEscalation &&
-    keepJudge
+    keepJudge &&
+    keepQuestion
   ) {
     return runMode;
   }
@@ -801,6 +835,7 @@ export function scrubRunModeProviderPins(
         : {}),
       ...(escalationProvider && keepEscalation ? { escalationProvider } : {}),
       ...(judgeProvider && keepJudge ? { judgeProvider } : {}),
+      ...(questionProvider && keepQuestion ? { questionProvider } : {}),
       ...(orchestratorProvider && keepOrchestrator
         ? { orchestratorProvider }
         : {}),

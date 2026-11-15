@@ -5,6 +5,7 @@ import { enhancePrompt, promptEnhancePartition } from "./prompt-enhancer.js";
 import { createBackgroundCompaction } from "./compaction-background.js";
 import { createWorkspaceLoader } from "./session-workspace.js";
 import { prepareRuntimeSkills } from "./composition/runtime-skills.js";
+import { createQuestionEscalation } from "./composition/question-escalation-consult.js";
 import { createRuntimeToolRegistry, registerRuntimeCoreTools, registerRuntimeVisionTools, registerRuntimeImageTools, registerRuntimeVideoTools, connectRuntimeMcpCatalog, mcpGrammarHookFor, registerRuntimeFusionAndReadScope } from "./composition/runtime-tool-catalog.js";
 import { prepareRuntimeSessionStore, installRuntimeSessionDelete, createRuntimeSessionFactories } from "./composition/runtime-session-services.js";
 import { prepareRuntimeTurnState, createRuntimeTurnService } from "./composition/runtime-turn-service.js";
@@ -552,6 +553,13 @@ export async function createAgentRuntime(
     // reads, so the tool the orchestrator is being pushed towards is
     // always in the catalog when the push happens.
     isFusionMode: () => resolveCurrentRunMode().effective === "fusion",
+    // Kodevagten: the orchestrator's question goes to the question
+    // model before the person, while `fusion.questionProvider` is set.
+    questionEscalation: createQuestionEscalation({
+      resolveCurrentRunMode,
+      providerRegistry,
+      sessionUsage,
+    }),
     // A fusion turn starts: its fan-out grant is dropped and its $ /
     // time caps (ATO-947) start from zero.
     clearFanoutTurnGrant: (sessionId: string) => {

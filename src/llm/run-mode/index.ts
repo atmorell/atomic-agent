@@ -2,6 +2,7 @@ export { resolveRunMode } from "./resolve-run-mode.js";
 export type {
   ResolvedRunMode,
   FusionEscalationTarget,
+  FusionQuestionTarget,
   FusionRoleModel,
   FusionRoleModels,
   ResolveRunModeOptions,

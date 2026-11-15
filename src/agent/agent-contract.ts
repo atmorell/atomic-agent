@@ -112,6 +112,16 @@ export interface AgentLoopDependencies {
    */
   isFusionMode?: () => boolean;
   /**
+   * Kodevagten (`policies/question-escalation.ts`), read at the start of
+   * each fusion orchestrator turn: the consult that sends the
+   * orchestrator's question to `llm.runMode.fusion.questionProvider` and
+   * the turn's cap, or `null` when it is off.
+   */
+  questionEscalation?: () => {
+    consult: import("./policies/question-escalation.js").QuestionConsult;
+    maxPerTurn: number;
+  } | null;
+  /**
    * Drop the fan-out approval a previous turn on this session earned.
    * See `approval/fanout-scope.ts`: the answer is scoped to one job.
    */

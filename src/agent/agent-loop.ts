@@ -54,6 +54,7 @@ import { HistoryTrimWarnings, reportHistoryTrim } from "./history-trim-warning.j
 import { toolDisabledEvents } from "./tool-disabled-notice.js";
 import { CompactPromptLatch } from "../prompt/compact-prompt.js";
 import { turnStableWorkerSlots } from "../prompt/fusion-machine-facts.js";
+import { createQuestionGate } from "./policies/question-escalation.js";
 
 /**
  * What the user reads when the step loop ran out before the model
@@ -150,6 +151,14 @@ export class AgentLoop {
     const policies = prepareTurnPolicies(session.id, options, this.deps);
     const { fusionOrchestratorTurn, toolRole, claimEvidence, linkEvidence, progressNotes, unknownTools } = policies;
     let { fusionState, reviewStall, replan } = policies;
+    // Kodevagten: one gate per fusion turn, so its cap counts this turn.
+    const questionTarget = fusionOrchestratorTurn
+      ? this.deps.questionEscalation?.() ?? null
+      : null;
+    const questionGate =
+      questionTarget === null
+        ? undefined
+        : createQuestionGate(questionTarget.consult, questionTarget.maxPerTurn);
     const turn = createTurnLoopState();
     const liveWorkerSlots = this.deps.liveWorkerSlots
       ? turnStableWorkerSlots(this.deps.liveWorkerSlots)
@@ -524,6 +533,7 @@ export class AgentLoop {
             claimEvidence,
             linkEvidence,
             progressNotes,
+            ...(questionGate !== undefined ? { questionGate } : {}),
             unknownTools,
             slotManager: this.deps.slotManager,
             grammar: activeGrammar,

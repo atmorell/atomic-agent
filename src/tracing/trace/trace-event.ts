@@ -34,6 +34,7 @@ export type TraceEvent =
   | TraceToolInvocation
   | TraceParseRetry
   | TraceAnswerContinued
+  | TraceQuestionEscalated
   | TraceBatchTrimmed
   | TraceBatchApprovalBarriers
   | TraceLoopDetected
@@ -224,6 +225,23 @@ export interface TraceParseRetry extends TraceEventBase {
  * so) or `abandoned` (the step fell back to the truncation error).
  * `partialChars` is the length of the cut answer, never its text.
  */
+/**
+ * Kodevagten: a fusion orchestrator's question went to the question model
+ * before the person. `answered`: the turn went on with the answer;
+ * `cannot` / `failed`: the question reached the person.
+ */
+export interface TraceQuestionEscalated extends TraceEventBase {
+  type: "question_escalated";
+  turnIndex: number;
+  stepIndex: number;
+  outcome: "answered" | "cannot" | "failed";
+  providerId: string | null;
+  model: string | null;
+  costUsd: number | null;
+  questionChars: number;
+  detail: string;
+}
+
 export interface TraceAnswerContinued extends TraceEventBase {
   type: "answer_continued";
   turnIndex: number;

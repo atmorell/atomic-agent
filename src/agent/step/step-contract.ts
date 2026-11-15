@@ -206,6 +206,13 @@ export interface StepDependencies {
    * accompanies every note.
    */
   progressNotes?: ProgressNoteNoticeState;
+  /**
+   * Kodevagten (`policies/question-escalation.ts`): set only in a fusion
+   * orchestrator turn with `llm.runMode.fusion.questionProvider`. A sole
+   * `reply` that asks the person something goes there first; an answer
+   * keeps the reply as an interim note and the turn goes on.
+   */
+  questionGate?: import("../policies/question-escalation.js").QuestionGate;
   slotManager: SlotManager;
   llmComplete: (params: LlmStreamParams) => Promise<CompletionResult>;
   /**

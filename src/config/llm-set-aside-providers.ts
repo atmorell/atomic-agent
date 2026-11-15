@@ -85,6 +85,7 @@ export function withoutSetAsideProviderRefs(
     if (named(next.workerProvider)) { delete next.workerProvider; delete next.workerModel; }
     if (named(next.escalationProvider)) delete next.escalationProvider;
     if (named(next.judgeProvider)) delete next.judgeProvider;
+    if (named(next.questionProvider)) delete next.questionProvider;
     if (next.roles !== null && typeof next.roles === "object" && !Array.isArray(next.roles)) {
       const roles = Object.entries(next.roles).filter(([, id]) => !named(id));
       if (roles.length > 0) next.roles = Object.fromEntries(roles);

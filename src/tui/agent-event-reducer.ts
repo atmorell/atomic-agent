@@ -1328,6 +1328,20 @@ function reduceStepEvent(
           `${event.refused && event.refused.length > 0 ? `; ${event.refused.length} refused by the turn policy` : ""})`,
         color: "yellow",
       });
+    case "question_escalated":
+      // Kodevagten: the orchestrator's question went to the question
+      // model first; the line says who answered, or that it reaches you.
+      return appendFeed(state, {
+        kind: "runtime_info",
+        stepIndex: event.stepIndex,
+        line:
+          event.outcome === "answered"
+            ? `» question answered by ${event.model ?? "the question model"} — the turn goes on`
+            : event.outcome === "cannot"
+              ? `» ${event.model ?? "the question model"} could not answer — the question is yours`
+              : "» the question model failed — the question is yours",
+        color: "yellow",
+      });
     case "answer_continued":
       // ATO-1031: the reply hit the length limit and the step asked for
       // the rest once. Without the line, the second wait looks like a hang.

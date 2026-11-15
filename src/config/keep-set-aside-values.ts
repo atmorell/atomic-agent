@@ -62,6 +62,7 @@ const PROVIDER_REF_KEYS: ReadonlyArray<readonly [string, string?]> = [
   ["llm.runMode.fusion.workerProvider", "llm.runMode.fusion.workerModel"],
   ["llm.runMode.fusion.escalationProvider"],
   ["llm.runMode.fusion.judgeProvider"],
+  ["llm.runMode.fusion.questionProvider"],
 ];
 
 const FUSION_ROLES_KEY = "llm.runMode.fusion.roles";

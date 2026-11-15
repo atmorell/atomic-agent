@@ -23,6 +23,7 @@ import { prepareStepInference } from "./step/step-inference.js";
 
 import { executeBatch, toBatchInputs } from "./dispatch/batch-scheduler.js";
 import { toolLogFields } from "./tool-log-fields.js";
+import { holdQuestionForEscalation, questionToHold } from "./step/step-question-gate.js";
 
 import { ModelError, detectModelFailure } from "../llm/index.js";
 // The detector moved to the llm layer so the stream consumer can share its
@@ -223,7 +224,8 @@ async function executeStepInner(
     const retryParseDeps = finishStepRepair(repairArgs, repair, completion);
     parsed = finishStepBatchRepair(parsingArgs, completion, retryParseDeps);
   }
-  const batch = parsed.batch;
+  const question = questionToHold(ctx, deps, parsed.batch, policy);
+  const batch = question === null ? parsed.batch : await holdQuestionForEscalation(ctx, deps, parsed.batch, policy, question);
   const admission = prepareStepDispatch(ctx, deps, batch, completion, policy);
   const { calls, batchSize } = admission;
   const progressNote = policy.progressNote;

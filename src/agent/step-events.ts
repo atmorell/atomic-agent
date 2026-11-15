@@ -209,6 +209,23 @@ export type StepEvent =
    * (the continuation failed; the step ends with the original
    * truncation). Counts only — never the text.
    */
+  /**
+   * Kodevagten: a fusion orchestrator's question was sent to the question
+   * model before the person (`policies/question-escalation.ts`).
+   * `answered`: the reply became an interim note and the turn went on;
+   * `cannot` / `failed`: the reply closed the turn and reached the person.
+   */
+  | {
+      type: "question_escalated";
+      stepIndex: number;
+      outcome: "answered" | "cannot" | "failed";
+      providerId: string | null;
+      model: string | null;
+      costUsd: number | null;
+      questionChars: number;
+      /** The answer, or why it could not be given; clipped. */
+      detail: string;
+    }
   | {
       type: "answer_continued";
       stepIndex: number;

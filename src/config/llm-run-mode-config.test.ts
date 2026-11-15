@@ -462,3 +462,44 @@ describe("autoVerify / autoVerifyRounds (lever F1)", () => {
   });
 });
 
+
+describe("questionProvider (kodevagten)", () => {
+  it("parses a pinned provider and a bounded per-turn cap", () => {
+    expect(
+      parseLlmRunModeConfig(
+        { fusion: { questionProvider: "claude-cli", questionMaxPerTurn: 5 } },
+        providers,
+        "llm.runMode",
+      ),
+    ).toEqual({ fusion: { questionProvider: "claude-cli", questionMaxPerTurn: 5 } });
+  });
+
+  it("refuses a provider that does not exist and a cap out of range", () => {
+    expect(() =>
+      parseLlmRunModeConfig(
+        { fusion: { questionProvider: "nobody" } },
+        providers,
+        "llm.runMode",
+      ),
+    ).toThrow(/llm\.runMode\.fusion\.questionProvider/);
+    expect(() =>
+      parseLlmRunModeConfig(
+        { fusion: { questionMaxPerTurn: 11 } },
+        providers,
+        "llm.runMode",
+      ),
+    ).toThrow(/questionMaxPerTurn/);
+  });
+
+  it("drops the pin when its provider is removed", () => {
+    const block = {
+      mode: "fusion" as const,
+      fusion: { questionProvider: "claude-cli", questionMaxPerTurn: 2 },
+    };
+    expect(scrubRunModeProviderPins(block, "claude-cli")).toEqual({
+      mode: "fusion",
+      fusion: { questionMaxPerTurn: 2 },
+    });
+    expect(scrubRunModeProviderPins(block, "openrouter")).toEqual(block);
+  });
+});

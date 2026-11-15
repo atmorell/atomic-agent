@@ -156,6 +156,8 @@ const LLM_FUSION_KEYS: Record<keyof UserLlmFusionConfig, true> = {
   escalationMaxUsd: true,
   judge: true,
   judgeProvider: true,
+  questionProvider: true,
+  questionMaxPerTurn: true,
   autoReplan: true,
   autoVerify: true,
   autoVerifyRounds: true,

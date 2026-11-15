@@ -373,3 +373,26 @@ describe("autoVerify (lever F1)", () => {
   });
 });
 
+
+describe("fusion question target (kodevagten)", () => {
+  it("is off until a provider is pinned", () => {
+    expect(resolveRunMode(llm("openrouter", { mode: "fusion" })).question).toBeNull();
+  });
+
+  it("names the pinned third model with the default cap of 3", () => {
+    const rm = resolveRunMode(
+      llm("openrouter", { mode: "fusion", fusion: { questionProvider: "groq" } }),
+    );
+    expect(rm.question).toEqual({ providerId: "groq", model: "llama-3.3", maxPerTurn: 3 });
+  });
+
+  it("is null when it names a leg of its own or the cap is 0", () => {
+    for (const fusion of [
+      { questionProvider: "openrouter" },
+      { questionProvider: "local-llama" },
+      { questionProvider: "groq", questionMaxPerTurn: 0 },
+    ]) {
+      expect(resolveRunMode(llm("openrouter", { mode: "fusion", fusion })).question).toBeNull();
+    }
+  });
+});

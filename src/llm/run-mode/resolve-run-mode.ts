@@ -6,6 +6,7 @@ import type {
 import {
   FUSION_ROLES,
   DEFAULT_FUSION_ESCALATION_MAX_USD,
+  DEFAULT_FUSION_QUESTION_MAX_PER_TURN,
   DEFAULT_FUSION_AUTOVERIFY_ROUNDS,
   DEFAULT_FUSION_CLOUD_WORKERS,
   DEFAULT_FUSION_WORKER_MAX_STEPS,
@@ -84,6 +85,12 @@ export type ResolvedRunMode = {
    */
   judge?: { providerId: string; model: string | null } | null;
   /**
+   * Where the orchestrator's questions to the person go first
+   * (kodevagten), or `null` when `questionProvider` is unset, names a leg
+   * of its own, or `questionMaxPerTurn` is 0. Optional for fixtures.
+   */
+  question?: FusionQuestionTarget | null;
+  /**
    * Models by role (ATO-943), present only when `llm.runMode.fusion.roles`
    * names at least one provider that exists. Optional for fixtures.
    */
@@ -124,6 +131,12 @@ export type ResolvedRunMode = {
    */
   primaryProviderId: string;
   degraded: RunModeDegradation | null;
+};
+
+export type FusionQuestionTarget = {
+  providerId: string;
+  model: string | null;
+  maxPerTurn: number;
 };
 
 export type FusionEscalationTarget = {
@@ -335,6 +348,23 @@ export function resolveRunMode(
           maxUsd: fusion?.escalationMaxUsd ?? DEFAULT_FUSION_ESCALATION_MAX_USD,
         };
 
+  // The question escalation goes to a third model: asking the
+  // orchestrator its own question, or the worker, gains nothing.
+  const questionEntry = byId(fusion?.questionProvider);
+  const questionMax =
+    fusion?.questionMaxPerTurn ?? DEFAULT_FUSION_QUESTION_MAX_PER_TURN;
+  const question: FusionQuestionTarget | null =
+    questionEntry === undefined ||
+    questionEntry.id === workerProviderId ||
+    questionEntry.id === orchestrator?.id ||
+    questionMax <= 0
+      ? null
+      : {
+          providerId: questionEntry.id,
+          model: questionEntry.defaultChatModel ?? questionEntry.model ?? null,
+          maxPerTurn: questionMax,
+        };
+
   return {
     stored,
     effective,
@@ -365,6 +395,7 @@ export function resolveRunMode(
       fusion?.workerTimeoutMs ?? DEFAULT_FUSION_WORKER_TIMEOUT_MS,
     escalation,
     judge,
+    question,
     ...(roles === undefined ? {} : { roles }),
     ...(fusion?.autoReplan !== undefined && fusion.autoReplan > 0
       ? { autoReplan: fusion.autoReplan }

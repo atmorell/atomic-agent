@@ -90,6 +90,8 @@ function formatTraceEvent(event: TraceEvent, raw: boolean): string {
       }`;
     case "parse_retry":
       return `${head} step=${event.stepIndex} attempt=${event.attempt} reason=${event.reason}`;
+    case "question_escalated":
+      return `${head} step=${event.stepIndex} outcome=${event.outcome} model=${event.model ?? "-"} detail=${truncate(event.detail, 120, raw)}`;
     case "answer_continued":
       return `${head} step=${event.stepIndex} cause=${event.cause} partial=${event.partialChars} outcome=${event.outcome}`;
     case "task_continued":
