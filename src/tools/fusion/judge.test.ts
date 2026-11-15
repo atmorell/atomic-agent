@@ -558,9 +558,18 @@ describe("a node closes only on a green list (ATO-944)", () => {
       { tasks: TASK },
       { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
     );
-    const row = (result.details.tasks as Array<{ status: string; notes?: string[] }>)[0]!;
+    const row = (
+      result.details.tasks as Array<{
+        status: string;
+        notes?: string[];
+        judge?: { green: boolean; failed: number; retried: boolean };
+      }>
+    )[0]!;
     expect(row.status).toBe("cancelled");
     expect(row.notes?.join(" ")).toMatch(/the retry ended cancelled and was not judged/);
+    // The first verdict's findings stay visible: which item, and why (ap1d).
+    expect(row.notes?.join(" ")).toContain("— a2 no score;");
+    expect(row.judge).toMatchObject({ green: false, failed: 1, retried: true });
     rmSync(dir, { recursive: true, force: true });
   });
 

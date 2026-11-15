@@ -542,6 +542,26 @@ export interface JudgeSummary {
   items: ItemVerdict[];
 }
 
+/** A verdict as the row's `judge` field carries it. */
+export function judgeSummary(verdict: JudgeVerdict, retried: boolean): JudgeSummary {
+  return {
+    green: verdict.green,
+    total: verdict.items.length,
+    failed: redItems(verdict).length,
+    retried,
+    ...(verdict.unverified === undefined ? {} : { unverified: verdict.unverified }),
+    costUsd: verdict.costUsd,
+    items: verdict.items,
+  };
+}
+
+/** The red items as one line: `a2 why; a5 why`. */
+export function renderRedItems(verdict: JudgeVerdict): string {
+  return redItems(verdict)
+    .map((v) => `${v.id} ${v.why}`)
+    .join("; ");
+}
+
 /** Fold a verdict into the task's row: a node closes only on a green list. */
 export function applyJudgeVerdict(
   result: WorkerTaskResult,
@@ -549,15 +569,7 @@ export function applyJudgeVerdict(
   retried: boolean,
 ): WorkerTaskResult {
   const red = redItems(verdict);
-  const summary: JudgeSummary = {
-    green: verdict.green,
-    total: verdict.items.length,
-    failed: red.length,
-    retried,
-    ...(verdict.unverified === undefined ? {} : { unverified: verdict.unverified }),
-    costUsd: verdict.costUsd,
-    items: verdict.items,
-  };
+  const summary = judgeSummary(verdict, retried);
   const after = retried ? " after one retry" : "";
   if (verdict.unverified !== undefined) {
     return {
@@ -580,7 +592,7 @@ export function applyJudgeVerdict(
       ],
     };
   }
-  const detail = red.map((v) => `${v.id} ${v.why}`).join("; ");
+  const detail = renderRedItems(verdict);
   const skipped = verdict.items.length - verdict.items.filter((v) => v.by !== "skipped").length;
   const error = `judge: ${red.length} of ${verdict.items.length} acceptance items not met${after} — ${detail}${skipped > 0 ? ` (${skipped} not judged)` : ""}`;
   return {

@@ -72,9 +72,11 @@ import {
 import {
   applyJudgeVerdict,
   buildAcceptanceChecklist,
+  judgeSummary,
   judgeTask,
   redItems,
   renderAcceptanceBlock,
+  renderRedItems,
   renderRetryFindings,
   type JudgeVerdict,
 } from "./judge.js";
@@ -1491,16 +1493,18 @@ export function buildFusionDelegateTool(
         results = results.map((r) => {
           if (retryIds.has(r.id)) {
             const verdict = second.get(r.id);
-            // A retry that did not come back judgeable (it failed or was
-            // cancelled) keeps its own status; the first verdict stands
-            // beside it.
+            // A retry that did not come back judgeable (it failed, was
+            // cancelled or changed nothing) keeps its own status; the first
+            // verdict and its findings stand beside it, so the orchestrator
+            // can see what was red (ap1d, 15-11-2026).
             if (verdict !== undefined) return applyJudgeVerdict(r, verdict, true);
             const before = first.get(r.id)!;
             return {
               ...r,
+              judge: judgeSummary(before, true),
               notes: [
                 ...(r.notes ?? []),
-                `judge: ${redItems(before).length} of ${before.items.length} acceptance items were not met before the retry; the retry ended ${r.status} and was not judged`,
+                `judge: ${redItems(before).length} of ${before.items.length} acceptance items were not met before the retry — ${renderRedItems(before)}; the retry ended ${r.status} and was not judged`,
               ],
             };
           }
