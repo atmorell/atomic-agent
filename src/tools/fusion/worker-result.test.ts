@@ -9,8 +9,10 @@ import {
   WORKER_HINT_SATURATED,
   WORKER_HINT_UNREACHABLE,
   WORKER_HINT_UNSERVED,
+  WORKER_COMMAND_OUTPUT_CHARS,
   WORKER_OPERATOR_ONLY_NOTE,
   WorkerRunCollector,
+  readCommandRun,
   classifyWorkerStatus,
   delegateOutcome,
   deliveredNothing,
@@ -285,6 +287,108 @@ const SALES_REPLACED = {
   saved: "saved",
   copy: "1-sales.csv",
 };
+
+const PYTEST_RUN = {
+  cmd: "python",
+  args: ["-m", "pytest", "-q"],
+  rawArgs: ["-m", "pytest", "-q"],
+  cwd: "/repo",
+  shell: false,
+  exitCode: 0,
+  durationMs: 900,
+  timedOut: false,
+  truncated: false,
+  outputStreams: "stdout",
+};
+const PYTEST_TEXT = "$ python -m pytest -q\nexit: 0\n3 passed in 0.02s";
+
+function shellRun(
+  details: Record<string, unknown> = PYTEST_RUN,
+  fullOutput: string | undefined = PYTEST_TEXT,
+): AgentLoopEvent {
+  return {
+    type: "llm_event",
+    event: {
+      type: "tool_call_executed",
+      result: {
+        tool: "os.shell.run",
+        status: details.exitCode === 0 ? "ok" : "error",
+        summary: fullOutput ?? "",
+        details,
+        truncated: false,
+        ...(fullOutput === undefined ? {} : { fullOutput }),
+      },
+      batchIndex: 0,
+      batchSize: 1,
+    },
+  };
+}
+
+describe("the worker's last command run (autoverify reuse)", () => {
+  it("reads the line, directory, exit, duration and stdout of a run", () => {
+    expect(
+      readCommandRun({ summary: PYTEST_TEXT, details: PYTEST_RUN, fullOutput: PYTEST_TEXT, truncated: false }),
+    ).toEqual({
+      lines: ["python -m pytest -q"],
+      cwd: "/repo",
+      exitCode: 0,
+      timedOut: false,
+      durationMs: 900,
+      stdoutTail: "3 passed in 0.02s",
+      changedAfter: false,
+    });
+  });
+
+  it("keeps stdout apart from stderr, and says nothing when it cannot tell", () => {
+    const read = (details: Record<string, unknown>, text: string, truncated = false) =>
+      readCommandRun({ summary: text, details, truncated })?.stdoutTail;
+    const both = "$ python -m pytest -q\nexit: 0\n3 passed\n---\nDeprecationWarning";
+    expect(read({ ...PYTEST_RUN, outputStreams: "both" }, both)).toBe("3 passed");
+    expect(read({ ...PYTEST_RUN, outputStreams: "stderr" }, both)).toBe("");
+    // A result from before `outputStreams`, a cut output, a cut summary.
+    expect(read({ ...PYTEST_RUN, outputStreams: undefined }, PYTEST_TEXT)).toBeUndefined();
+    expect(read({ ...PYTEST_RUN, truncated: true }, PYTEST_TEXT)).toBeUndefined();
+    expect(read(PYTEST_RUN, PYTEST_TEXT, true)).toBeUndefined();
+    const long = `$ python -m pytest -q\nexit: 0\n${"x".repeat(WORKER_COMMAND_OUTPUT_CHARS)}END`;
+    expect(read(PYTEST_RUN, long)).toHaveLength(WORKER_COMMAND_OUTPUT_CHARS);
+    expect(read(PYTEST_RUN, long)?.endsWith("END")).toBe(true);
+  });
+
+  it("is no run for a background job or a call that did not reach its exit", () => {
+    const read = (details: Record<string, unknown>) =>
+      readCommandRun({ summary: PYTEST_TEXT, details, truncated: false });
+    expect(read({ ...PYTEST_RUN, jobId: 3 })).toBeUndefined();
+    const { exitCode: _exit, ...noExit } = PYTEST_RUN;
+    expect(read(noExit)).toBeUndefined();
+    expect(read({ ...PYTEST_RUN, cwd: undefined })).toBeUndefined();
+  });
+
+  it("marks a run stale once a call that can change a file comes after it", () => {
+    const c = new WorkerRunCollector();
+    expect(c.lastCommand()).toBeUndefined();
+    c.observe(shellRun());
+    c.observe(toolExecuted("os.fs.read", "ok"));
+    c.observe(toolExecuted("os.git.diff", "ok"));
+    // A failed write changed nothing.
+    c.observe(toolExecuted("os.fs.edit", "error", "no match"));
+    expect(c.lastCommand()?.changedAfter).toBe(false);
+    c.observe(toolExecuted("os.fs.write", "ok"));
+    expect(c.lastCommand()?.changedAfter).toBe(true);
+    // A new run of the command is current again.
+    c.observe(shellRun());
+    expect(c.lastCommand()?.changedAfter).toBe(false);
+    // A tool not known to leave files alone counts as a change.
+    c.observe(toolExecuted("browser.click", "ok"));
+    expect(c.lastCommand()?.changedAfter).toBe(true);
+  });
+
+  it("gives no run once the worker started a background job", () => {
+    const c = new WorkerRunCollector();
+    c.observe(shellRun({ ...PYTEST_RUN, cmd: "node", args: ["server.js"], rawArgs: ["server.js"], jobId: 1 }));
+    c.observe(shellRun());
+    expect(c.lastCommand()).toBeUndefined();
+  });
+});
 
 describe("WorkerRunCollector — replaced inputs (F43)", () => {
   // Live, fusion, Gemma worker (2026-09-15): the write result's warning

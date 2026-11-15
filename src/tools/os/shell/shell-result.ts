@@ -122,6 +122,15 @@ export function renderShellResult(input: ShellResultInput): CompressedToolResult
   );
 }
 
+/** Which streams `joinShellOutput` put in the body, in that order. */
+export type ShellOutputStreams = "stdout" | "stderr" | "both" | "none";
+
+export function shellOutputStreams(output: CommandJobOutput): ShellOutputStreams {
+  const out = output.stdout.trim().length > 0;
+  const err = output.stderr.trim().length > 0;
+  return out && err ? "both" : out ? "stdout" : err ? "stderr" : "none";
+}
+
 /** stdout and stderr, the non-empty ones, separated. */
 export function joinShellOutput(output: CommandJobOutput): string {
   return [output.stdout, output.stderr]
@@ -165,6 +174,7 @@ export function renderShellExit(
       timedOut: false,
       ...(extra.jobId === undefined ? {} : { jobId: extra.jobId }),
       truncated: output.truncated,
+      outputStreams: shellOutputStreams(output),
     },
   });
 }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { getConfig, resetConfigCache } from "../../../config/index.js";
 import { checkShellCommandGuard } from "../shell-command-guard/index.js";
-import { renderShellExit, type ShellCommandFacts } from "./shell-result.js";
+import { renderShellExit, shellOutputStreams, type ShellCommandFacts } from "./shell-result.js";
 
 /**
  * The ingestion cap on an `os.shell.run` result. The compressor runs
@@ -175,5 +175,22 @@ describe("os.shell.run ingestion cap", () => {
     resetConfigCache();
     const capped = run("gog", longOutput(1_000), true);
     expect(summaryLines(capped.summary)).toBe(summaryLines(result.summary));
+  });
+});
+
+describe("os.shell.run says which streams its body holds", () => {
+  it("names stdout, stderr, both or none, as joinShellOutput joined them", () => {
+    const out = (stdout: string, stderr: string) =>
+      shellOutputStreams({ stdout, stderr, truncated: false });
+    expect(out("3 passed\n", "")).toBe("stdout");
+    expect(out("", "warning\n")).toBe("stderr");
+    expect(out("3 passed", "warning")).toBe("both");
+    expect(out("  \n", "")).toBe("none");
+    const result = renderShellExit(
+      facts("npm"),
+      { exitCode: 0, signal: null, durationMs: 5 },
+      { stdout: "3 passed", stderr: "", truncated: false },
+    );
+    expect(result.details).toMatchObject({ outputStreams: "stdout", durationMs: 5 });
   });
 });

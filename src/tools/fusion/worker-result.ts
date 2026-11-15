@@ -1,4 +1,5 @@
 import type { FusionRole } from "../../config/llm-run-mode-config.js";
+import type { CompressedToolResult } from "../../compressor/result-compressor.js";
 import type { CompletionUsage } from "../../llm/provider/completion-types.js";
 import { estimateUsageCostUsd } from "../../llm/provider/usage-cost.js";
 import type {
@@ -103,6 +104,133 @@ export const FILE_WRITING_TOOLS: ReadonlySet<string> = new Set([
   "os.fs.patch",
   "os.fs.restore",
 ]);
+
+/**
+ * The worker's last `os.shell.run` that reached its exit, and whether a
+ * call that can change the tree came after it. Autoverify reuses a
+ * passing run of its own command instead of running it again
+ * (`reusableWorkerRun`): in the field that second run was the same test,
+ * on the same files, seconds later.
+ */
+export interface WorkerCommandRun {
+  /** `cmd` plus its arguments, whitespace collapsed: as the call gave them, then as they ran. */
+  lines: string[];
+  /** The directory it ran in, as the shell tool resolved it. */
+  cwd: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  /** How long it ran, when the result says. */
+  durationMs: number | undefined;
+  /**
+   * The end of its stdout, or `undefined` when the result does not tell
+   * stdout apart: the full output is gone, or was cut.
+   */
+  stdoutTail: string | undefined;
+  /** A successful write, or any call not known to leave files alone, came after it. */
+  changedAfter: boolean;
+}
+
+/** How much of a run's stdout `WorkerCommandRun.stdoutTail` keeps. */
+export const WORKER_COMMAND_OUTPUT_CHARS = 4000;
+
+/**
+ * Calls that leave the tree as it was, so a recorded run stays current
+ * across them. Everything else — another tool, a job wait, a shell
+ * command the result does not describe — counts as a change.
+ */
+const LEAVES_FILES_ALONE: ReadonlySet<string> = new Set([
+  "os.fs.read",
+  "os.fs.read_document",
+  "os.fs.list",
+  "os.fs.glob",
+  "os.fs.grep",
+  "os.fs.watch",
+  "os.fs.locate_project",
+  "os.fs.code_map",
+  "os.fs.archive.list",
+  "os.fs.archive.read_entry",
+  "os.git.status",
+  "os.git.log",
+  "os.git.diff",
+  "os.git.show",
+  "os.git.blame",
+  "os.proc.list",
+  "os.window.list",
+  "verify.syntax",
+  "verify.run",
+  "tool.view",
+  "tool.search",
+  "reply",
+  "finish",
+]);
+
+/** `cmd` and its arguments as one comparable line. */
+export function commandLineOf(cmd: string, args: readonly unknown[]): string {
+  return [cmd, ...args.map(String)].join(" ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The stdout part of a shell result's full text: the body under the
+ * `exit:` line, up to the `---` that `joinShellOutput` puts before
+ * stderr. A stdout that itself holds a `---` line is cut short there,
+ * which can only make a `stdout contains` check fail, never pass.
+ */
+function stdoutOf(fullOutput: string, streams: unknown): string | undefined {
+  if (streams === "stderr" || streams === "none") return "";
+  if (streams !== "stdout" && streams !== "both") return undefined;
+  const text = fullOutput.replace(/\r\n/g, "\n");
+  const header = /^\$ [^\n]*\n(?:[^\n]*\n)*?exit: [^\n]*(?:\n|$)/m.exec(text);
+  if (header === null) return undefined;
+  const body = text.slice(header.index + header[0].length);
+  if (streams === "stdout") return body;
+  const split = body.indexOf("\n---\n");
+  return split < 0 ? undefined : body.slice(0, split);
+}
+
+/**
+ * A shell result's run, when it reached its exit in the call itself
+ * (`details.exitCode` present, no `jobId`: a job collected by a later
+ * wait is not the call that ran). A refused or unreadable call gives
+ * `undefined`.
+ */
+export function readCommandRun(
+  result: Pick<CompressedToolResult, "summary" | "details" | "fullOutput" | "truncated">,
+): WorkerCommandRun | undefined {
+  const d = (result.details ?? {}) as Record<string, unknown>;
+  if (typeof d.cmd !== "string" || typeof d.cwd !== "string") return undefined;
+  if (!("exitCode" in d) || d.jobId !== undefined) return undefined;
+  const cmd = d.cmd;
+  const spellings = [d.rawArgs, d.args].filter(Array.isArray) as unknown[][];
+  const lines = [
+    ...new Set(
+      spellings.length === 0
+        ? [commandLineOf(cmd, [])]
+        : spellings.map((args) => commandLineOf(cmd, args)),
+    ),
+  ];
+  // The full text when the result still carries it; a copy made on the
+  // way (an approval record, a guard note) keeps only the summary, which
+  // is the whole output when it was not cut.
+  const text =
+    typeof result.fullOutput === "string"
+      ? result.fullOutput
+      : result.truncated !== true
+        ? result.summary
+        : undefined;
+  const stdout =
+    text !== undefined && d.truncated !== true
+      ? stdoutOf(text, d.outputStreams)
+      : undefined;
+  return {
+    lines,
+    cwd: d.cwd,
+    exitCode: typeof d.exitCode === "number" ? d.exitCode : null,
+    timedOut: d.timedOut === true,
+    durationMs: typeof d.durationMs === "number" ? d.durationMs : undefined,
+    stdoutTail: stdout?.slice(-WORKER_COMMAND_OUTPUT_CHARS),
+    changedAfter: false,
+  };
+}
 
 /**
  * How the call as a whole went, for `details.outcome` and the tool
@@ -258,6 +386,37 @@ export class WorkerRunCollector {
   /** The last few tool results, one line each — what a hand-back reports. */
   private readonly recent: string[] = [];
   private readonly replaced: ReplacedInput[] = [];
+  private lastRun: WorkerCommandRun | undefined;
+  private startedJob = false;
+
+  /**
+   * The worker's last shell run that reached its exit, if any. None once
+   * the worker put a command in the background: a run may have leaned on
+   * it (a server it tested against), and the job may still be writing.
+   */
+  lastCommand(): WorkerCommandRun | undefined {
+    return this.lastRun === undefined || this.startedJob
+      ? undefined
+      : { ...this.lastRun, lines: [...this.lastRun.lines] };
+  }
+
+  private trackCommand(result: CompressedToolResult): void {
+    if (result.tool === "os.shell.run") {
+      if ((result.details as Record<string, unknown> | undefined)?.jobId !== undefined) {
+        this.startedJob = true;
+      }
+      const run = readCommandRun(result);
+      if (run !== undefined) {
+        this.lastRun = run;
+        return;
+      }
+    }
+    if (this.lastRun === undefined || this.lastRun.changedAfter) return;
+    if (LEAVES_FILES_ALONE.has(result.tool)) return;
+    // A write that failed left the file as it was.
+    if (FILE_WRITING_TOOLS.has(result.tool) && result.status === "error") return;
+    this.lastRun = { ...this.lastRun, changedAfter: true };
+  }
 
   /** Feed one `AgentLoopEvent` from the worker turn's hook. */
   observe(event: AgentLoopEvent): void {
@@ -311,6 +470,7 @@ export class WorkerRunCollector {
       // The guard's hit is in the result's details whatever its status:
       // the write landed before the guard spoke.
       this.replaced.push(...replacedInputsOf(result.tool, result.details));
+      this.trackCommand(result);
       this.recent.push(
         `${result.tool} ${result.status}: ${oneLine(result.summary, FINDING_CHARS)}`,
       );

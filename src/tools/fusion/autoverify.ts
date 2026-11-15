@@ -13,13 +13,19 @@
  * loop: nothing is repaired and nothing is verified again.
  */
 import { readFile, stat } from "node:fs/promises";
-import { relative, resolve as resolvePath } from "node:path";
+import { isAbsolute, relative, resolve as resolvePath } from "node:path";
 
 import type { CompressedToolResult } from "../../compressor/result-compressor.js";
 import { CancelledError } from "../../llm/index.js";
 import type { ToolContext } from "../tool-registry.js";
+import { evaluateChecks } from "../verify/verify-checks.js";
+import { parseVerifyRunArgs } from "../verify/verify-run-args.js";
 import type { DelegateTask } from "./delegate-args.js";
-import type { WorkerTaskResult } from "./worker-result.js";
+import {
+  commandLineOf,
+  type WorkerCommandRun,
+  type WorkerTaskResult,
+} from "./worker-result.js";
 
 /** At most this many lines of failure output reach the orchestrator. */
 export const AUTOVERIFY_EXCERPT_LINES = 30;
@@ -75,6 +81,8 @@ export interface AutoVerifyReport {
   repairs: AutoVerifyRepairRow[];
   /** Why the loop stopped short of a pass, when it did. */
   reason?: string;
+  /** The pass is the worker's own run of the command, not a new one (`reusableWorkerRun`). */
+  reused?: boolean;
 }
 
 /**
@@ -294,8 +302,96 @@ export function repairInstructions(
   ].join("\n");
 }
 
+/** The verify keys a reuse understands; any other (`env`, a service or page field) runs the verify. */
+const REUSABLE_VERIFY_KEYS: ReadonlySet<string> = new Set([
+  "kind",
+  "cmd",
+  "args",
+  "cwd",
+  "timeoutMs",
+  "network",
+  "checks",
+]);
+/** A pipe, redirect, chain, expansion, glob or quote makes the line ambiguous. */
+const SHELL_SYNTAX = /[|&;<>`$"'*?(){}[\]~^%!]/;
+
+function sameDir(a: string, b: string): boolean {
+  const norm = (p: string): string => {
+    const abs = resolvePath(p);
+    return process.platform === "win32" ? abs.toLowerCase() : abs;
+  };
+  return norm(a) === norm(b);
+}
+
+/**
+ * True when the worker's own last run already answers the verify, so
+ * autoverify need not run it again. Every condition must hold, and a
+ * doubt runs the verify: a `command` spec with no `env`; the same
+ * command line, free of shell syntax, and no argument with a space in
+ * it; the same directory, inside the working directory; exit 0 within
+ * the verify's timeout, not timed out, not a background job; no call
+ * after it that can change a file; and checks limited to `exit 0` and
+ * `stdout contains "x"`, met by the run's stdout tail (a needle found
+ * in the tail is in the whole output too).
+ *
+ * The run happened in the working directory itself, not in a throwaway
+ * copy, and without verify's network block.
+ */
+export function reusableWorkerRun(
+  verifyArgs: Record<string, unknown>,
+  run: WorkerCommandRun | undefined,
+  workingDir: string,
+): boolean {
+  if (run === undefined) return false;
+  if (Object.keys(verifyArgs).some((k) => !REUSABLE_VERIFY_KEYS.has(k))) return false;
+  let parsed: ReturnType<typeof parseVerifyRunArgs>;
+  try {
+    parsed = parseVerifyRunArgs(verifyArgs);
+  } catch {
+    return false;
+  }
+  if (parsed.kind !== "command" || parsed.cmd === undefined || parsed.env !== undefined) return false;
+  const args = parsed.args ?? [];
+  const line = commandLineOf(parsed.cmd, args);
+  if (line === "" || SHELL_SYNTAX.test(line) || args.some((a) => /\s/.test(a))) return false;
+  if (!run.lines.includes(line)) return false;
+  const cwd =
+    parsed.cwd === undefined
+      ? workingDir
+      : isAbsolute(parsed.cwd)
+        ? resolvePath(parsed.cwd)
+        : resolvePath(workingDir, parsed.cwd);
+  const inside = relative(resolvePath(workingDir), cwd);
+  if (inside.startsWith("..") || isAbsolute(inside)) return false;
+  if (!sameDir(cwd, run.cwd)) return false;
+  if (run.exitCode !== 0 || run.timedOut || run.changedAfter) return false;
+  if (run.durationMs === undefined || run.durationMs > parsed.timeoutMs) return false;
+  const checks = parsed.checks ?? [];
+  for (const check of checks) {
+    const tokens = check.trim().split(/\s+/);
+    const exitZero =
+      tokens[0] === "exit" &&
+      ((tokens.length === 2 && tokens[1] === "0") ||
+        (tokens.length === 3 && tokens[1] === "==" && tokens[2] === "0"));
+    const stdoutHas = tokens[0] === "stdout" && tokens[1] === "contains";
+    if (!exitZero && !stdoutHas) return false;
+    if (stdoutHas && run.stdoutTail === undefined) return false;
+  }
+  return evaluateChecks(checks, {
+    kind: "command",
+    exitCode: 0,
+    timedOut: false,
+    stdout: run.stdoutTail ?? "",
+  }).every((c) => c.ok);
+}
+
 export interface RunAutoVerifyInput {
   verifyArgs: Record<string, unknown>;
+  /**
+   * The worker's last command run, for a call of one task that ended
+   * ok. A run `reusableWorkerRun` accepts is the pass; nothing is run.
+   */
+  reuse?: WorkerCommandRun | undefined;
   /** Repairs allowed after the first verify (0..5). */
   maxRepairs: number;
   /** Step budget of each repair task (`AUTOVERIFY_REPAIR_MAX_STEPS` or less). */
@@ -333,6 +429,22 @@ export async function runAutoVerify(input: RunAutoVerifyInput): Promise<AutoVeri
       ...(reason === undefined ? {} : { reason }),
     };
   };
+  if (
+    !input.ctx.signal.aborted &&
+    reusableWorkerRun(input.verifyArgs, input.reuse, input.ctx.workingDir)
+  ) {
+    const parsed = parseVerifyRunArgs(input.verifyArgs);
+    return {
+      status: "pass",
+      rounds: 1,
+      exitCode: 0,
+      command: commandLineOf(parsed.cmd ?? "", parsed.args ?? []),
+      excerpt: [],
+      diffstat: diffStat(input.before, await input.snapshot()),
+      repairs,
+      reused: true,
+    };
+  }
   for (;;) {
     if (input.ctx.signal.aborted) return done(rounds === 0 ? "not_run" : "fail", "cancelled");
     let result: CompressedToolResult;
@@ -394,7 +506,7 @@ export function renderAutoVerifyBlock(report: AutoVerifyReport): string {
   const headLine =
     report.status === "not_run"
       ? `autoverify: NOT RUN — ${report.reason ?? "no verify ran"}`
-      : `autoverify: ${report.status === "pass" ? "PASS" : "FAIL"} after ${report.rounds} round${report.rounds === 1 ? "" : "s"} (exit ${report.exitCode ?? "none"}${repaired})${what}${report.status === "fail" && report.reason !== undefined ? ` — ${report.reason}` : ""}`;
+      : `autoverify: ${report.status === "pass" ? "PASS" : "FAIL"} after ${report.rounds} round${report.rounds === 1 ? "" : "s"} (exit ${report.exitCode ?? "none"}${repaired})${what}${report.status === "fail" && report.reason !== undefined ? ` — ${report.reason}` : ""}${report.reused === true ? " — reused the worker's own passing run (no file changed after it)" : ""}`;
   const lines = [headLine];
   if (report.excerpt.length > 0) {
     lines.push(`failure (${report.excerpt.length} line${report.excerpt.length === 1 ? "" : "s"}):`);

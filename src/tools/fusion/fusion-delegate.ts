@@ -102,6 +102,7 @@ import {
   delegateOutcome,
   fanoutSpend,
   formatDelegateOutput,
+  type WorkerCommandRun,
   type WorkerPricing,
   type WorkerTaskResult,
 } from "./worker-result.js";
@@ -848,6 +849,9 @@ export function buildFusionDelegateTool(
         }
         return breaker;
       };
+      // Each task's last worker shell run, for autoverify's reuse of a
+      // passing run of its own command (`reusableWorkerRun`).
+      const workerCommands = new Map<string, WorkerCommandRun | undefined>();
       const guardOptionsFor = (
         providerId: string,
         pricing: WorkerPricing | undefined,
@@ -858,6 +862,7 @@ export function buildFusionDelegateTool(
         | "onWorkerUsage"
         | "onWorkerTool"
         | "onTaskFinished"
+        | "onWorkerCommand"
       > => {
         const budget: Pick<
           Parameters<typeof runWorkerTasks>[1],
@@ -874,6 +879,9 @@ export function buildFusionDelegateTool(
           onTaskFinished: (result: WorkerTaskResult): void => {
             breaker.observe(result);
             checkpoint.onTaskFinished?.(result);
+          },
+          onWorkerCommand: (taskId, run): void => {
+            workerCommands.set(taskId, run);
           },
         };
       };
@@ -1535,6 +1543,13 @@ export function buildFusionDelegateTool(
                 },
                 before: autoVerifyBefore,
                 snapshot,
+                // One task, done, and nothing else wrote after it: its
+                // worker's own last run is the files as they are now.
+                ...(parsed.tasks.length === 1 &&
+                results.length === 1 &&
+                results[0]!.status === "ok"
+                  ? { reuse: workerCommands.get(results[0]!.id) }
+                  : {}),
               });
       }
       // Automatic replanning (ATO-941): what did not close, from the

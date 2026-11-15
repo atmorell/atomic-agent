@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RunTurnResult } from "../../agent/agent-loop.js";
@@ -23,10 +23,12 @@ import {
   failureExcerpt,
   readAutoVerifyArgs,
   renderAutoVerifyBlock,
+  reusableWorkerRun,
   type AutoVerifyDispatch,
   type AutoVerifyReport,
 } from "./autoverify.js";
 import { buildFusionDelegateTool, type FusionDelegateDeps } from "./fusion-delegate.js";
+import type { WorkerCommandRun } from "./worker-result.js";
 
 const PYTEST_FAIL = [
   "============================= test session starts ==============================",
@@ -212,6 +214,83 @@ describe("autoverify pieces", () => {
   });
 });
 
+describe("reusableWorkerRun", () => {
+  const ROOT = resolve(tmpdir(), "reuse-root");
+  const SPEC = { kind: "command", cmd: "python", args: ["-m", "pytest", "-q"], checks: ["exit 0"] };
+  const RUN: WorkerCommandRun = {
+    lines: ["python -m pytest -q"],
+    cwd: ROOT,
+    exitCode: 0,
+    timedOut: false,
+    durationMs: 900,
+    stdoutTail: "3 passed in 0.02s",
+    changedAfter: false,
+  };
+  const reuse = (spec: Record<string, unknown>, run: Partial<WorkerCommandRun> = {}) =>
+    reusableWorkerRun(spec, { ...RUN, ...run }, ROOT);
+
+  it("takes the worker's passing run of the same command in the same directory", () => {
+    expect(reuse(SPEC)).toBe(true);
+    expect(reuse({ kind: "command", cmd: "python", args: ["-m", "pytest", "-q"] })).toBe(true);
+    expect(reuse({ ...SPEC, checks: ["exit == 0", 'stdout contains "3 passed"'] })).toBe(true);
+    expect(reuse({ ...SPEC, cwd: "pkg" }, { cwd: join(ROOT, "pkg") })).toBe(true);
+    expect(reuse({ ...SPEC, cwd: join(ROOT, "pkg") }, { cwd: join(ROOT, "pkg") })).toBe(true);
+    expect(reuse({ ...SPEC, network: true, timeoutMs: 5_000 })).toBe(true);
+  });
+
+  it("runs the verify when there is no run, or a different one", () => {
+    expect(reusableWorkerRun(SPEC, undefined, ROOT)).toBe(false);
+    expect(reuse({ ...SPEC, args: ["-m", "pytest"] })).toBe(false);
+    expect(reuse({ ...SPEC, cwd: "pkg" })).toBe(false);
+    expect(reuse(SPEC, { cwd: join(ROOT, "pkg") })).toBe(false);
+  });
+
+  it("runs the verify when the run failed, timed out, ran too long or is stale", () => {
+    expect(reuse(SPEC, { exitCode: 1 })).toBe(false);
+    expect(reuse(SPEC, { exitCode: null })).toBe(false);
+    expect(reuse(SPEC, { timedOut: true })).toBe(false);
+    expect(reuse(SPEC, { changedAfter: true })).toBe(false);
+    expect(reuse(SPEC, { durationMs: undefined })).toBe(false);
+    expect(reuse(SPEC, { durationMs: 120_001 })).toBe(false);
+    expect(reuse({ ...SPEC, timeoutMs: 300_000 }, { durationMs: 120_001 })).toBe(true);
+  });
+
+  it("runs the verify for anything it cannot judge from the run", () => {
+    expect(reuse({ ...SPEC, env: { CI: "1" } })).toBe(false);
+    expect(reuse({ kind: "service", start: { cmd: "python" }, ready: { port: 8000 } })).toBe(false);
+    expect(reuse({ ...SPEC, cwd: ".." }, { cwd: resolve(ROOT, "..") })).toBe(false);
+    expect(reuse({ ...SPEC, checks: ["exit != 0"] })).toBe(false);
+    expect(reuse({ ...SPEC, checks: ['stdout not contains "FAILED"'] })).toBe(false);
+    expect(reuse({ ...SPEC, checks: ['stderr contains "x"'] })).toBe(false);
+    expect(reuse({ ...SPEC, checks: ['stdout contains "nope"'] })).toBe(false);
+    expect(reuse({ ...SPEC, checks: ['stdout contains "3 passed"'] }, { stdoutTail: undefined })).toBe(false);
+    expect(reuse({ ...SPEC, extra: 1 })).toBe(false);
+  });
+
+  it("runs the verify for a line with shell syntax or an argument with a space", () => {
+    const piped = { ...SPEC, args: ["-m", "pytest", "-q", "|", "tail"] };
+    expect(reuse(piped, { lines: ["python -m pytest -q | tail"] })).toBe(false);
+    const spaced = { ...SPEC, args: ["-k", "a b"] };
+    expect(reuse(spaced, { lines: ["python -k a b"] })).toBe(false);
+  });
+
+  it("says in the block that the pass is the worker's own run", () => {
+    const head = renderAutoVerifyBlock({
+      status: "pass",
+      rounds: 1,
+      exitCode: 0,
+      command: "python -m pytest -q",
+      excerpt: [],
+      diffstat: [],
+      repairs: [],
+      reused: true,
+    }).split("\n")[0];
+    expect(head).toBe(
+      "autoverify: PASS after 1 round (exit 0) — `python -m pytest -q` — reused the worker's own passing run (no file changed after it)",
+    );
+  });
+});
+
 // ── fusion.delegate with autoverify ─────────────────────────────────
 
 const logger = new StructuredLogger({ level: "error", sinks: [] });
@@ -296,7 +375,7 @@ function ctx(signal = new AbortController().signal): ToolContext {
 /** Workers that edit calc.py; a repair brief is recorded and edits it again. */
 function workers() {
   const briefs: string[] = [];
-  const runTurn = vi.fn(async (session: SessionState, message: string) => {
+  const runTurn = vi.fn<FusionDelegateDeps["runTurn"]>(async (session, message) => {
     briefs.push(message);
     const fix = message.includes("its check fails");
     writeFileSync(
@@ -347,7 +426,7 @@ describe("fusion.delegate autoverify", () => {
     // short leash: the configured 7 steps here, at most 12 anywhere.
     expect(repair).toContain("calc.py:2 +     # integer");
     const repairCall = w.runTurn.mock.calls.find((c) => String(c[1]).includes("its check fails"))!;
-    expect((repairCall[2] as { maxSteps?: number }).maxSteps).toBe(7);
+    expect(repairCall[2]?.maxSteps).toBe(7);
     expect(result.summary.split("\n")[0]).toBe(
       "autoverify: PASS after 2 rounds (exit 0, 1 repair: autoverify-repair-1 ok) — `python -m pytest -q`",
     );
@@ -365,7 +444,7 @@ describe("fusion.delegate autoverify", () => {
       { tasks: [TASK], verify: VERIFY },
       ctx(),
     );
-    const steps = w.runTurn.mock.calls.map((c) => (c[2] as { maxSteps?: number }).maxSteps);
+    const steps = w.runTurn.mock.calls.map((c) => c[2]?.maxSteps);
     expect(steps).toEqual([60, AUTOVERIFY_REPAIR_MAX_STEPS]);
     expect(AUTOVERIFY_REPAIR_MAX_STEPS).toBe(12);
   });
@@ -489,5 +568,88 @@ describe("fusion.delegate autoverify", () => {
     expect(result.status).toBe("error");
     expect(result.summary).toContain("`verify` must be a verify.run args object");
     expect(w.runTurn).not.toHaveBeenCalled();
+  });
+});
+
+describe("fusion.delegate autoverify reuses the worker's passing run", () => {
+  /** A worker that fixes calc.py, runs the verify's command itself, then maybe writes again. */
+  function testingWorker(after?: "write") {
+    return vi.fn<FusionDelegateDeps["runTurn"]>(async (session, _message, options) => {
+      writeFileSync(join(work, "calc.py"), "def divide(a, b):\n    return a / b\n");
+      const text = "$ python -m pytest -q\nexit: 0\n3 passed in 0.02s";
+      options.eventHook?.({
+        type: "llm_event",
+        event: {
+          type: "tool_call_executed",
+          result: {
+            tool: "os.shell.run",
+            status: "ok",
+            summary: text,
+            fullOutput: text,
+            details: {
+              cmd: "python",
+              args: ["-m", "pytest", "-q"],
+              rawArgs: ["-m", "pytest", "-q"],
+              cwd: work,
+              shell: false,
+              exitCode: 0,
+              durationMs: 900,
+              timedOut: false,
+              truncated: false,
+              outputStreams: "stdout",
+            },
+            truncated: false,
+          },
+          batchIndex: 0,
+          batchSize: 1,
+        },
+      });
+      if (after === "write") {
+        options.eventHook?.({
+          type: "llm_event",
+          event: {
+            type: "tool_call_executed",
+            result: { tool: "os.fs.write", status: "ok", summary: "wrote calc.py", details: {}, truncated: false },
+            batchIndex: 0,
+            batchSize: 1,
+          },
+        });
+      }
+      return turnResult(session);
+    });
+  }
+
+  it("passes without running the verify again when no file changed after the run", async () => {
+    const dispatch = vi.fn<AutoVerifyDispatch>(async () => verifyResult(true));
+    const result = await buildFusionDelegateTool(deps(dispatch, testingWorker())).run(
+      { tasks: [TASK], verify: VERIFY },
+      ctx(),
+    );
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(result.summary.split("\n")[0]).toBe(
+      "autoverify: PASS after 1 round (exit 0) — `python -m pytest -q` — reused the worker's own passing run (no file changed after it)",
+    );
+    const report = result.details.autoverify as AutoVerifyReport;
+    expect(report).toMatchObject({ status: "pass", reused: true, rounds: 1, repairs: [] });
+    expect(report.diffstat).toEqual([{ path: "calc.py", added: 1, removed: 1 }]);
+  });
+
+  it("runs the verify when the worker wrote after its run", async () => {
+    const dispatch = vi.fn<AutoVerifyDispatch>(async () => verifyResult(true));
+    const result = await buildFusionDelegateTool(deps(dispatch, testingWorker("write"))).run(
+      { tasks: [TASK], verify: VERIFY },
+      ctx(),
+    );
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect((result.details.autoverify as AutoVerifyReport).reused).toBeUndefined();
+  });
+
+  it("runs the verify for a call of more than one task", async () => {
+    const dispatch = vi.fn<AutoVerifyDispatch>(async () => verifyResult(true));
+    await buildFusionDelegateTool(deps(dispatch, testingWorker())).run(
+      { tasks: [TASK, { ...TASK, id: "t2", title: "More", files: ["more.py"] }], verify: VERIFY },
+      ctx(),
+    );
+    expect(dispatch).toHaveBeenCalledOnce();
   });
 });

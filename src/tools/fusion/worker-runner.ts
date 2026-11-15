@@ -37,6 +37,7 @@ import {
 import {
   WorkerRunCollector,
   WORKER_QUEUED_NOTE,
+  type WorkerCommandRun,
   formatWaitMs,
   queuedWorkerHint,
   unservedWorkerHint,
@@ -631,6 +632,13 @@ export interface RunWorkerTasksOptions {
   onWorkerTool?: (taskId: string, tool: string) => void;
   /** Each task's row as soon as it is final, before the fan-out returns (ATO-617). */
   onTaskFinished?: (result: WorkerTaskResult) => void;
+  /**
+   * The last shell run of the worker whose turn produced the task's row
+   * (the replacement's, once a stuck worker was replaced), or `undefined`
+   * when it ran none. Autoverify reuses a passing run of its own command
+   * from it (`reusableWorkerRun`).
+   */
+  onWorkerCommand?: (taskId: string, run: WorkerCommandRun | undefined) => void;
 }
 
 /**
@@ -716,6 +724,9 @@ async function runOneTask(
 ): Promise<WorkerTaskResult> {
   const startedAt = Date.now();
   const collector = new WorkerRunCollector();
+  // Whose shell runs describe the files as they are left: a replacement
+  // worker's, once one took over (`onWorkerCommand`).
+  let commandSource = collector;
   // Branch isolation (ATO-946): the task's own workspace stands in for
   // the working directory everywhere below. Without it, nothing changes.
   const isolated = options.taskWorkspace?.(delegated.id);
@@ -1589,6 +1600,7 @@ async function runOneTask(
     );
     armWorkerSession(replaceSession.id);
     const replaceCollector = new WorkerRunCollector();
+    commandSource = replaceCollector;
     const capAbort = new AbortController();
     const replaceTimer = setTimeout(
       () => capAbort.abort(new Error("time limit")),
@@ -1926,6 +1938,11 @@ async function runOneTask(
     durationMs: result.durationMs,
     summary: summarise(result),
   });
+  try {
+    options.onWorkerCommand?.(task.id, commandSource.lastCommand());
+  } catch {
+    // A listener's fault must not lose the task's row.
+  }
   return result;
 }
 
