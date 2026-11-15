@@ -138,6 +138,28 @@ describe("parseToolCalls with repairJson", () => {
     expect(batch.jsonRepair?.closedBrackets).toBe(true);
   });
 
+  it("reads that call when the made-up text after it holds an object that parses", () => {
+    // Seen in fusion run b2-f1b: the invented tool result after the broken
+    // call is valid JSON, and it must not stand in for the call.
+    const raw =
+      '[{"tool":"fusion.delegate","args":{"tasks":[{"id":"t1","goal":"g"}],"maxWorkers":1}]' +
+      '\n\nuser[fusion.delegate] {"run":"wk-1","status":[{"id":"t1","state":"ok"}],"maxWorkers":1}';
+    expect(() => parseToolCalls(raw)).toThrow(/non-empty tool name/);
+    const batch = parseToolCalls(raw, {}, { repairJson: true });
+    expect(batch.calls).toEqual([
+      { tool: "fusion.delegate", args: { tasks: [{ id: "t1", goal: "g" }], maxWorkers: 1 } },
+    ]);
+    expect(batch.jsonRepair?.fixes).toEqual([JSON_FIX.skippedCloser]);
+    expect(batch.jsonRepair?.closedBrackets).toBe(true);
+  });
+
+  it("keeps a parsed root that is no call when the opening run is no call either", () => {
+    const own = '{"run":"wk-1"} and then [{"x":1}';
+    expect(() => parseToolCalls(own, {}, { repairJson: true })).toThrow(/non-empty tool name/);
+    const noCall = '[{"a":{"b":1}]\n\n{"run":"wk-1"}';
+    expect(() => parseToolCalls(noCall, {}, { repairJson: true })).toThrow(/non-empty tool name/);
+  });
+
   it("leaves a clean batch unmarked", () => {
     const batch = parseToolCalls('[{"tool":"reply","args":{"text":"hi"}}]', {}, { repairJson: true });
     expect(batch.jsonRepair).toBeUndefined();

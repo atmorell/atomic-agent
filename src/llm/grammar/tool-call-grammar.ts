@@ -294,8 +294,9 @@ function parseRoot(
       kind: Array.isArray(fixed.value) ? "array" : "object",
     };
   }
+  let parsed: unknown;
   try {
-    return { parsed: JSON.parse(root.jsonText), kind: root.kind };
+    parsed = JSON.parse(root.jsonText);
   } catch (error) {
     // The span scan drops a run whose closer does not match, so the root
     // it found may be a later bracket run in trailing text: also try the
@@ -315,6 +316,33 @@ function parseRoot(
       kind: Array.isArray(fixed.value) ? "array" : "object",
     };
   }
+  return openingCallOver(body, root, parsed, repair) ?? { parsed, kind: root.kind };
+}
+
+/**
+ * A root that parses but is no call, in a body that OPENS with a bracket
+ * run the span scan dropped (a closer skipped inside the call), came from
+ * the text the model made up after the call: an invented `{"run":…}`
+ * tool result. The call is the run the answer opens with, so it gets the
+ * repair attempt an unparseable root gets. When that yields no call, the
+ * parsed root stands and the usual error follows.
+ */
+function openingCallOver(
+  body: string,
+  root: ExtractedRoot,
+  parsed: unknown,
+  repair: RepairState,
+): { parsed: unknown; kind: "object" | "array" } | null {
+  if (!repair.enabled || looksLikeToolCallRoot(parsed)) return null;
+  const opened = body.trim();
+  if (!/^[[{]/.test(opened) || opened.startsWith(root.jsonText)) return null;
+  const fixed = repairJsonText(opened);
+  if (fixed === null || !looksLikeToolCallRoot(fixed.value)) return null;
+  repair.report = mergeJsonRepair(repair.report, fixed);
+  return {
+    parsed: fixed.value,
+    kind: Array.isArray(fixed.value) ? "array" : "object",
+  };
 }
 
 function normalizeToolCall(
