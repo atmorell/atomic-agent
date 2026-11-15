@@ -169,6 +169,30 @@ describe("parseToolCalls with repairJson", () => {
     expect(batch.jsonRepair?.closedBrackets).toBe(true);
   });
 
+  it("reads that call when a line of prose comes before it", () => {
+    // Seen in fusion run t2-f2a: the same skipped closer, but the answer
+    // opened with a plan sentence, so the repair never looked at the call.
+    const raw =
+      "Plan: two parallel parts. Then pytest as verify.\n\n" +
+      '[{"tool":"fusion.delegate","args":{"tasks":[{"id":"pakke","goal":"g"},{"id":"tests","goal":"h"}],' +
+      '"contract":{"provides":[{"task":"pakke","kind":"symbol","name":"beregn","in":"regn/__init__.py"}],' +
+      '"requires":[{"task":"tests","name":"beregn"},{"task":"tests","name":"RegnFejl"}]},' +
+      '"verify":{"cmd":"python","checks":["exit 0"]}}]';
+    expect(parseToolCalls(raw).calls.map((call) => call.tool)).toEqual(["beregn", "RegnFejl"]);
+    const batch = parseToolCalls(raw, {}, { repairJson: true });
+    expect(batch.calls.map((call) => call.tool)).toEqual(["fusion.delegate"]);
+    expect(batch.calls[0]!.args.verify).toEqual({ cmd: "python", checks: ["exit 0"] });
+    expect(batch.jsonRepair?.closedBrackets).toBe(true);
+  });
+
+  it("keeps a later call when the prose quotes a complete call first", () => {
+    const raw =
+      'Earlier I sent {"tool":"read","args":{"path":"a"}} and now:\n\n' +
+      '[{"tool":"reply","args":{"text":"hi"}}]';
+    const batch = parseToolCalls(raw, {}, { repairJson: true });
+    expect(batch.calls).toEqual([{ tool: "reply", args: { text: "hi" } }]);
+  });
+
   it("keeps a call-like root when the answer does not open with a call object", () => {
     const raw = '[1, {"a":2}]\n\n[{"tool":"reply","args":{"text":"hi"}}]';
     const batch = parseToolCalls(raw, {}, { repairJson: true });

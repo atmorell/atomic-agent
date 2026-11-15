@@ -67,7 +67,9 @@ Node 25.7 ligger i `~/.atomic-agent-byg/node-v25.7.0-win-x64`. Alt køres i Git 
 
    På Windows fejler seks prøver ens på uændret `main` (linjeskift i
    `build-grammar` og `tool-call-branches`, `spawn-einval` og
-   `host-environment`). Alt andet skal være grønt.
+   `host-environment`). Alt andet skal være grønt. `npm run docs:check`
+   fejler af samme grund (`core.autocrlf=true` ændrer arkivfilernes sha256);
+   kun linjer uden `archive` tæller.
 
 5. Opgave 1 på bygget, før det installeres:
 

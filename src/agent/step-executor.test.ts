@@ -6381,6 +6381,8 @@ describe("executeStep slot pinning (F13)", () => {
       },
       grammar,
       profile: PLAIN_INSTRUCT_PROFILE,
+      toolTransport: "grammar" as const,
+      toolCallAdapter: null,
       supportsSlotAffinity: true,
     };
     let session = createEmptySessionState({ id: "s-pin", workingDir: "/w" });

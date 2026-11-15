@@ -328,6 +328,7 @@ function parseRoot(
  * parsed root stands and the usual error follows.
  */
 const OPENS_WITH_CALL = /^\[?\s*\{\s*"(?:tool|name|action)"\s*:/;
+const CALL_OPENER = /\[?\s*\{\s*"(?:tool|name|action)"\s*:/;
 
 function openingCallOver(
   body: string,
@@ -336,8 +337,8 @@ function openingCallOver(
   repair: RepairState,
 ): { parsed: unknown; kind: "object" | "array" } | null {
   if (!repair.enabled) return null;
-  const opened = body.trim();
-  if (!/^[[{]/.test(opened) || opened.startsWith(root.jsonText)) return null;
+  const opened = openingRun(body.trim());
+  if (opened === null || opened.startsWith(root.jsonText)) return null;
   // A root that does look like a call yields only when the answer opens
   // with an explicit call object: then the root is a fragment of that
   // call's own args (`{"task":"t","name":"beregn"}` in a contract) or of
@@ -350,6 +351,21 @@ function openingCallOver(
     parsed: fixed.value,
     kind: Array.isArray(fixed.value) ? "array" : "object",
   };
+}
+
+/**
+ * The bracket run the answer opens with. A plan sentence before the call
+ * (fusion run t2-f2a) does not count as content: then the run starts at
+ * the first explicit call object, but only when that object never closed
+ * — a complete call quoted in the prose is no broken opening call.
+ */
+function openingRun(text: string): string | null {
+  if (/^[[{]/.test(text)) return text;
+  const at = text.search(CALL_OPENER);
+  if (at < 0) return null;
+  const { spans } = collectRootSpans(text);
+  if (spans.some((span) => span.depth === 0 && span.start === at)) return null;
+  return text.slice(at);
 }
 
 function normalizeToolCall(
@@ -461,6 +477,8 @@ function peelTrailingToolJson(text: string): {
 interface RootSpan extends ExtractedRoot {
   /** Bracket nesting depth the span sits at; `0` is top level. */
   depth: number;
+  /** Index of the span's opener in the scanned text. */
+  start: number;
   /** Memoised `JSON.parse` result — filled in by `spanValue`. */
   parsed?: { ok: boolean; value: unknown };
 }
@@ -596,6 +614,7 @@ function collectRootSpans(input: string): {
       jsonText: input.slice(open.start, idx + 1),
       kind: open.kind,
       depth: stack.length,
+      start: open.start,
     });
   }
   return { spans, sawOpen };
