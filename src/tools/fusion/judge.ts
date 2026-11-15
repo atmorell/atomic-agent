@@ -44,6 +44,8 @@ import type {
  *     knew only the orchestrator's brief, which left out the exact
  *     output lines, and "Tilføjet" for the requested "Tilfoejet" passed
  *     (ap3b, 15-11-2026).
+ *     It fails an item only for a defect in what the user gets, never for
+ *     style the request does not ask for (`JUDGE_SEVERITY_RULE`, ap3h).
  *     The judge can only add red: it never turns a failed fact green.
  *     An item it gives no verdict for is red. An answer that cannot be
  *     read leaves the node unverified, never green.
@@ -88,6 +90,16 @@ export const JUDGE_MAX_OUTPUT_TOKENS = 1_200;
 export const JUDGE_RUN_CHARS = 1_500;
 /** How much of the user's original request the judge reads. */
 export const JUDGE_REQUEST_CHARS = 4_000;
+/**
+ * What makes an item fail. In ap3h (15-11-2026) the judge sent a working
+ * package back for "why" comments, the import form and test thoroughness
+ * the user never asked for; the retry cost four minutes and a third
+ * delegation, while the one real defect (`from_dict` for the request's
+ * `fra_dict`) sat in another task. A defect fails; taste is noted and passes.
+ */
+export const JUDGE_SEVERITY_RULE =
+  "Fail an item only for a defect that changes what the user gets: behaviour that is wrong or missing; a file, function or test that is missing or asserts the wrong thing; a name, message, output line or format that differs from the request; or a required run that failed or did not happen. " +
+  "Do not fail an item for style the user's request does not ask for — comments, docstrings, import form, helper names, or a test that is correct but could be more thorough — even when the task's wording asks for it. Name such a point in why and pass the item.";
 
 /**
  * What the runtime itself recorded of a task's workers — not their
@@ -364,6 +376,7 @@ export function renderJudgePrompt(input: {
   const request = input.originalRequest?.trim() ?? "";
   return [
     "You are a strict acceptance judge. A worker says it finished the task below. Do not trust it: find where the work does NOT meet each item. Rule only from the evidence shown. If the evidence does not show an item is met, it is not met.",
+    JUDGE_SEVERITY_RULE,
     ...(input.record === undefined
       ? []
       : [

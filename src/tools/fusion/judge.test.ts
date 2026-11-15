@@ -14,8 +14,10 @@ import {
   JUDGE_EVIDENCE_CHARS,
   JUDGE_REQUEST_CHARS,
   JUDGE_RUN_CHARS,
+  JUDGE_SEVERITY_RULE,
   judgeTask,
   parseJudgeAnswer,
+  renderJudgePrompt,
   renderRuntimeRecord,
   shareEvidenceBudget,
   type AcceptanceItem,
@@ -130,6 +132,23 @@ describe("the judge reads the user's original request (ap3b, 15-11-2026)", () =>
     expect(prompts[2]).toContain("[…]");
     expect(prompts[2]).not.toContain("TAIL");
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("the judge fails defects, not taste (ap3h, 15-11-2026)", () => {
+  it("tells the judge every time, right after its role, to pass an item that is only style", () => {
+    const task: DelegateTask = { id: "t", title: "T", instructions: "write a.py with why comments", files: ["a.py"] };
+    const prompt = renderJudgePrompt({
+      task,
+      items: buildAcceptanceChecklist(task, undefined),
+      facts: [],
+      evidence: "a.py: def f(): pass",
+    });
+    expect(prompt).toContain(JUDGE_SEVERITY_RULE);
+    expect(prompt.indexOf(JUDGE_SEVERITY_RULE)).toBeLessThan(prompt.indexOf("## Task"));
+    expect(JUDGE_SEVERITY_RULE).toContain("asserts the wrong thing");
+    expect(JUDGE_SEVERITY_RULE).toContain("even when the task's wording asks for it");
+    expect(JUDGE_SEVERITY_RULE).toContain("pass the item");
   });
 });
 

@@ -84,6 +84,39 @@ describe("findNameMisses", () => {
     ).toEqual([]);
   });
 
+  it("finds a snake_case name with one part in another language: from_dict for fra_dict (ap3h)", () => {
+    const misses = findNameMisses(REQUEST, [
+      {
+        path: "opg/model.py",
+        text: "class Opgave:\n    @classmethod\n    def from_dict(cls, d):\n        return cls(**d)\n    def til_dict(self):\n        return {}\n",
+      },
+      { path: "opg/lager.py", text: "return [Opgave.from_dict(d) for d in data]\n" },
+    ]);
+    expect(misses).toEqual([{ expected: "fra_dict", found: "from_dict", file: "opg/model.py" }]);
+    expect(formatNameSteer(misses)).toContain("one part of the name changed");
+  });
+
+  it("finds to_dict for til_dict, and stays quiet once til_dict is defined", () => {
+    const toDict = "def to_dict(self):\n    return {}\n";
+    expect(findNameMisses(REQUEST, [{ path: "m.py", text: toDict }]).map((m) => m.found)).toEqual(["to_dict"]);
+    expect(
+      findNameMisses(REQUEST, [{ path: "m.py", text: `${toDict}def til_dict(self):\n    return self.to_dict()\n` }]),
+    ).toEqual([]);
+  });
+
+  it("does not take a pytest function or a private name for a swapped part", () => {
+    expect(
+      findNameMisses(REQUEST, [
+        { path: "test_opg.py", text: "def test_dict():\n    pass\ndef _fra_dict():\n    pass\n" },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("needs the swapped part to start with the same letter and three shared characters", () => {
+    expect(findNameMisses(REQUEST, [{ path: "a.py", text: "def fra_list(x):\n    pass\n" }])).toEqual([]);
+    expect(findNameMisses("lav a_bc(x)", [{ path: "a.py", text: "def a_bxy(x):\n    pass\n" }])).toEqual([]);
+  });
+
   it("is empty without written files or call names", () => {
     expect(findNameMisses(REQUEST, [])).toEqual([]);
     expect(findNameMisses("no calls here", [{ path: "a.py", text: LAGER_SEM }])).toEqual([]);
@@ -95,6 +128,7 @@ describe("formatNameSteer", () => {
     const text = formatNameSteer([{ expected: "gem", found: "sem", file: "opg/lager.py" }]);
     expect(text).toContain("`gem(`");
     expect(text).toContain("`sem`");
+    expect(text).toContain("one letter off");
     expect(text).toContain("opg/lager.py");
     expect(text).toContain("spelled exactly as the request spells it");
     expect(text).toContain("If it is a different function, leave it.");

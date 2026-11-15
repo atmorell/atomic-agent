@@ -17,8 +17,12 @@ import { resolve } from "node:path";
  * merely does not touch a name is never told to:
  * - the request writes `R(` (R at least three characters);
  * - the worker's files define or call N (`def N(`, `class N`,
- *   `function N(`, `.N(`), N the same length as R and one character off;
- * - N is not a word anywhere in the request, nor a common library name;
+ *   `function N(`, `.N(`), and N is either the same length as R and one
+ *   character off, or the same snake_case name with one part said in
+ *   another language (`from_dict` for the request's `fra_dict`, ap3h,
+ *   15-11-2026; `to_dict` for `til_dict`);
+ * - N is not a word anywhere in the request, nor a common library name,
+ *   nor a pytest function (`test_dict` is not the request's `til_dict`);
  * - no written file calls or defines R (a comment or string saying "gem"
  *   does not count: the worker can describe the name and still not use it).
  */
@@ -91,9 +95,40 @@ function oneCharOff(a: string, b: string): boolean {
 }
 
 /**
+ * The same snake_case name with one part swapped: both have two parts
+ * or more, the same number, exactly one differs, the swapped parts start
+ * with the same letter (`fra`/`from`, `til`/`to`, so `to_dict` is not
+ * taken for `fra_dict`), and the parts they share hold at least three
+ * characters, so `a_bc` and `a_bxy` do not match. A leading, trailing or
+ * double underscore (`_find`, `__init__`) is no snake_case name here.
+ */
+function onePartOff(a: string, b: string): boolean {
+  if (a === b) return false;
+  const left = a.split("_");
+  const right = b.split("_");
+  if (left.length < 2 || left.length !== right.length) return false;
+  if ([...left, ...right].some((part) => part.length === 0)) return false;
+  let differing = 0;
+  let sameFirstLetter = false;
+  let shared = 0;
+  left.forEach((part, i) => {
+    const other = right[i]!;
+    if (part === other) {
+      shared += part.length;
+    } else {
+      differing += 1;
+      sameFirstLetter = part[0] === other[0];
+    }
+  });
+  return differing === 1 && sameFirstLetter && shared >= 3;
+}
+
+const PYTEST_NAME = /^test_/;
+
+/**
  * The request's names the worker's written files spell one character
- * off, by the rules in the module comment. One entry per (expected,
- * found) pair, in request order.
+ * off or with one snake_case part swapped, by the rules in the module
+ * comment. One entry per (expected, found) pair, in request order.
  */
 export function findNameMisses(
   request: string,
@@ -121,7 +156,10 @@ export function findNameMisses(
     if (usedNames.has(expected)) continue;
     for (const [found, file] of codeNames) {
       if (requestWords.has(found) || COMMON_NAMES.has(found)) continue;
-      if (oneCharOff(expected, found)) misses.push({ expected, found, file });
+      if (PYTEST_NAME.test(found) && !PYTEST_NAME.test(expected)) continue;
+      if (oneCharOff(expected, found) || onePartOff(expected, found)) {
+        misses.push({ expected, found, file });
+      }
     }
   }
   return misses;
@@ -132,7 +170,7 @@ export function formatNameSteer(misses: readonly NameMiss[]): string {
   const lines = misses.map(
     (m) =>
       `- the request names \`${m.expected}(\`, but none of your files define or call \`${m.expected}\`; ` +
-      `you wrote \`${m.found}\` (one letter off, in ${m.file}).`,
+      `you wrote \`${m.found}\` (${oneCharOff(m.expected, m.found) ? "one letter off" : "one part of the name changed"}, in ${m.file}).`,
   );
   return [
     "Name check by the runtime:",
