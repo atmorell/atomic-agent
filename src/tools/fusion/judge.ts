@@ -34,10 +34,13 @@ import type {
  *     about files — reads the files themselves and rules on the items no
  *     script can (the deliverable, a provide's shape, the instructions).
  *     Beside the files it reads the runtime's own record of the worker's
- *     calls: its last command that reached an exit (line, exit code, end
- *     of stdout) and the files its write tools named. Without it an
- *     instruction such as "run pytest and report the result" could never
- *     be shown met, and correct work was re-run (ap2c, 15-11-2026).
+ *     calls: each command that reached an exit (line, exit code, end of
+ *     stdout), oldest first, and the files its write tools named. Without
+ *     it an instruction such as "run pytest and report the result" could
+ *     never be shown met, and correct work was re-run (ap2c, 15-11-2026).
+ *     It lists every run, not only the last: a worker that ran pytest
+ *     (22 passed) and then counted lines was ruled "pytest did not run"
+ *     when the record held only the count (ap3i, 15-11-2026).
  *     It also reads the user's original request, which the worker's
  *     brief already quotes, with one extra item: an exact name, message
  *     or format the request fixes is used verbatim. Without it the judge
@@ -88,6 +91,8 @@ export const JUDGE_EVIDENCE_CHARS = 24_000;
 export const JUDGE_MAX_OUTPUT_TOKENS = 1_200;
 /** How much of the worker's last command's stdout the judge reads. */
 export const JUDGE_RUN_CHARS = 1_500;
+/** How much of each earlier command's stdout the judge reads. */
+export const JUDGE_EARLIER_RUN_CHARS = 400;
 /** How much of the user's original request the judge reads. */
 export const JUDGE_REQUEST_CHARS = 4_000;
 /**
@@ -103,11 +108,12 @@ export const JUDGE_SEVERITY_RULE =
 
 /**
  * What the runtime itself recorded of a task's workers — not their
- * words: the last shell run that reached its exit, and the paths their
+ * words: the shell runs that reached their exit, oldest first (one per
+ * command line, `WorkerRunCollector.commandRuns`), and the paths their
  * write, edit, patch and restore calls named.
  */
 export interface JudgeRecord {
-  run: WorkerCommandRun | undefined;
+  runs: readonly WorkerCommandRun[];
   written: readonly string[];
 }
 
@@ -124,23 +130,26 @@ export function renderRuntimeRecord(record: JudgeRecord, workingDir: string): st
       ? "- files written by the file tools: none"
       : `- files written by the file tools: ${record.written.map(shown).join(", ")}`,
   ];
-  const run = record.run;
-  if (run === undefined) {
-    lines.push("- last command run: none that reached its exit");
+  if (record.runs.length === 0) {
+    lines.push("- commands run: none that reached its exit");
     return lines.join("\n");
   }
-  const flags = [
-    `exit ${run.exitCode ?? "unknown"}`,
-    ...(run.timedOut ? ["timed out"] : []),
-    ...(run.changedAfter ? ["files may have changed after it"] : []),
-  ];
-  lines.push(`- last command run: \`${run.lines[0] ?? ""}\` — ${flags.join(", ")}`);
-  const stdout = run.stdoutTail?.trimEnd();
-  if (stdout !== undefined && stdout.length > 0) {
-    const tail =
-      stdout.length > JUDGE_RUN_CHARS ? `[…]${stdout.slice(-JUDGE_RUN_CHARS)}` : stdout;
-    lines.push("  end of its stdout:", "```", tail, "```");
-  }
+  lines.push(
+    "- commands run to their exit, oldest first (a command run again shows its last run only):",
+  );
+  record.runs.forEach((run, index) => {
+    const flags = [
+      `exit ${run.exitCode ?? "unknown"}`,
+      ...(run.timedOut ? ["timed out"] : []),
+      ...(run.changedAfter ? ["files may have changed after it"] : []),
+    ];
+    lines.push(`  ${index + 1}. \`${run.lines[0] ?? ""}\` — ${flags.join(", ")}`);
+    const stdout = run.stdoutTail?.trimEnd();
+    if (stdout === undefined || stdout.length === 0) return;
+    const limit = index === record.runs.length - 1 ? JUDGE_RUN_CHARS : JUDGE_EARLIER_RUN_CHARS;
+    const tail = stdout.length > limit ? `[…]${stdout.slice(-limit)}` : stdout;
+    lines.push("     end of its stdout:", "```", tail, "```");
+  });
   return lines.join("\n");
 }
 

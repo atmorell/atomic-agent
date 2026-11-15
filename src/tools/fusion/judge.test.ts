@@ -13,6 +13,7 @@ import {
   gatherEvidence,
   JUDGE_EVIDENCE_CHARS,
   JUDGE_REQUEST_CHARS,
+  JUDGE_EARLIER_RUN_CHARS,
   JUDGE_RUN_CHARS,
   JUDGE_SEVERITY_RULE,
   judgeTask,
@@ -237,28 +238,46 @@ describe("the judge reads the runtime's record of the run (ap2c, 15-11-2026)", (
     changedAfter: false,
   };
 
-  it("shows the last command, its exit and stdout, and the written files relative to the folder", () => {
+  it("shows the command, its exit and stdout, and the written files relative to the folder", () => {
     const dir = join(tmpdir(), "rec");
     const text = renderRuntimeRecord(
-      { run: RUN, written: [join(dir, "tests", "test_regn.py"), join(tmpdir(), "elsewhere.txt")] },
+      { runs: [RUN], written: [join(dir, "tests", "test_regn.py"), join(tmpdir(), "elsewhere.txt")] },
       dir,
     );
     expect(text).toContain("## Recorded by the runtime (facts, not the worker's words)");
     expect(text).toContain("files written by the file tools: tests/test_regn.py, ");
     expect(text).toContain(join(tmpdir(), "elsewhere.txt"));
-    expect(text).toContain("last command run: `python -m pytest -q` — exit 0");
+    expect(text).toContain("1. `python -m pytest -q` — exit 0");
     expect(text).toContain("36 passed in 0.40s");
   });
 
   it("says plainly when no command reached its exit and nothing was written", () => {
-    const text = renderRuntimeRecord({ run: undefined, written: [] }, tmpdir());
+    const text = renderRuntimeRecord({ runs: [], written: [] }, tmpdir());
     expect(text).toContain("files written by the file tools: none");
-    expect(text).toContain("last command run: none that reached its exit");
+    expect(text).toContain("commands run: none that reached its exit");
+  });
+
+  it("shows an earlier pytest run before a later line count (ap3i, 15-11-2026)", () => {
+    const count = {
+      ...RUN,
+      lines: ["wc -l tests/test_lager.py"],
+      stdoutTail: "212 tests/test_lager.py\n",
+    };
+    const early = { ...RUN, stdoutTail: `${"y".repeat(2_000)}\n22 passed in 0.31s\n` };
+    const text = renderRuntimeRecord({ runs: [early, count], written: [] }, tmpdir());
+    const pytest = text.indexOf("1. `python -m pytest -q` — exit 0");
+    const wc = text.indexOf("2. `wc -l tests/test_lager.py` — exit 0");
+    expect(pytest).toBeGreaterThan(-1);
+    expect(wc).toBeGreaterThan(pytest);
+    expect(text).toContain("22 passed in 0.31s");
+    expect(text).toContain("212 tests/test_lager.py");
+    // An earlier run keeps only a short tail: room for the summary line.
+    expect(text.slice(pytest, wc).length).toBeLessThan(JUDGE_EARLIER_RUN_CHARS + 200);
   });
 
   it("keeps the end of a long stdout and flags a timeout", () => {
     const text = renderRuntimeRecord(
-      { run: { ...RUN, timedOut: true, stdoutTail: `${"x".repeat(5_000)}END` }, written: [] },
+      { runs: [{ ...RUN, timedOut: true, stdoutTail: `${"x".repeat(5_000)}END` }], written: [] },
       tmpdir(),
     );
     expect(text).toContain("exit 0, timed out");
@@ -293,7 +312,7 @@ describe("the judge reads the runtime's record of the run (ap2c, 15-11-2026)", (
       signal: new AbortController().signal,
     };
     await judgeTask(base);
-    await judgeTask({ ...base, record: { run: RUN, written: [join(dir, "a.txt")] } });
+    await judgeTask({ ...base, record: { runs: [RUN], written: [join(dir, "a.txt")] } });
     expect(prompts[0]).not.toContain("Recorded by the runtime");
     expect(prompts[1]).toContain("shown by the runtime's record");
     expect(prompts[1]).toContain("files written by the file tools: a.txt");
@@ -541,9 +560,9 @@ describe("a node closes only on a green list (ATO-944)", () => {
     );
     expect(prompts).toHaveLength(2);
     expect(prompts[0]).toContain("files written by the file tools: a.txt");
-    expect(prompts[0]).toContain("last command run: none that reached its exit");
+    expect(prompts[0]).toContain("commands run: none that reached its exit");
     expect(prompts[1]).toContain("files written by the file tools: a.txt, b.txt");
-    expect(prompts[1]).toContain("last command run: `python -m pytest -q` — exit 0");
+    expect(prompts[1]).toContain("1. `python -m pytest -q` — exit 0");
     expect(prompts[1]).toContain("36 passed in 0.40s");
     const row = (result.details.tasks as Array<{ status: string }>)[0]!;
     expect(row.status).toBe("ok");

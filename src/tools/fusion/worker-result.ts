@@ -133,6 +133,9 @@ export interface WorkerCommandRun {
 /** How much of a run's stdout `WorkerCommandRun.stdoutTail` keeps. */
 export const WORKER_COMMAND_OUTPUT_CHARS = 4000;
 
+/** How many distinct command lines one worker turn's record keeps, newest last. */
+export const WORKER_RECORDED_RUNS = 6;
+
 /**
  * The paths a successful write, edit, patch or restore call names in its
  * details: `path`, and each `files[].path` of a patch. A shape this does
@@ -410,7 +413,8 @@ export class WorkerRunCollector {
   /** The last few tool results, one line each — what a hand-back reports. */
   private readonly recent: string[] = [];
   private readonly replaced: ReplacedInput[] = [];
-  private lastRun: WorkerCommandRun | undefined;
+  /** Runs that reached their exit, oldest first, one per command line. */
+  private runs: WorkerCommandRun[] = [];
   private startedJob = false;
   private readonly written = new Set<string>();
 
@@ -429,9 +433,21 @@ export class WorkerRunCollector {
    * it (a server it tested against), and the job may still be writing.
    */
   lastCommand(): WorkerCommandRun | undefined {
-    return this.lastRun === undefined || this.startedJob
-      ? undefined
-      : { ...this.lastRun, lines: [...this.lastRun.lines] };
+    const last = this.runs.at(-1);
+    return last === undefined || this.startedJob ? undefined : { ...last, lines: [...last.lines] };
+  }
+
+  /**
+   * Every shell run that reached its exit, oldest first: a command line
+   * run again keeps only its last run, and at most `WORKER_RECORDED_RUNS`
+   * lines are kept. The judge reads them all. With only the last, a
+   * worker that ran `python -m pytest -q` (22 passed) and then counted
+   * lines was ruled never to have run pytest, and correct work was re-run
+   * past the ten-minute limit (ap3i, 15-11-2026). None once a background
+   * job was started, as for `lastCommand`.
+   */
+  commandRuns(): WorkerCommandRun[] {
+    return this.startedJob ? [] : this.runs.map((run) => ({ ...run, lines: [...run.lines] }));
   }
 
   private trackCommand(result: CompressedToolResult): void {
@@ -441,15 +457,19 @@ export class WorkerRunCollector {
       }
       const run = readCommandRun(result);
       if (run !== undefined) {
-        this.lastRun = run;
+        this.runs = [...this.runs.filter((r) => r.lines[0] !== run.lines[0]), run].slice(
+          -WORKER_RECORDED_RUNS,
+        );
         return;
       }
     }
-    if (this.lastRun === undefined || this.lastRun.changedAfter) return;
+    // A change marks every run before it, so a stale last run means all are.
+    const last = this.runs.at(-1);
+    if (last === undefined || last.changedAfter) return;
     if (LEAVES_FILES_ALONE.has(result.tool)) return;
     // A write that failed left the file as it was.
     if (FILE_WRITING_TOOLS.has(result.tool) && result.status === "error") return;
-    this.lastRun = { ...this.lastRun, changedAfter: true };
+    this.runs = this.runs.map((r) => (r.changedAfter ? r : { ...r, changedAfter: true }));
   }
 
   /** Feed one `AgentLoopEvent` from the worker turn's hook. */

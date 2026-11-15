@@ -10,6 +10,7 @@ import {
   WORKER_HINT_UNREACHABLE,
   WORKER_HINT_UNSERVED,
   WORKER_COMMAND_OUTPUT_CHARS,
+  WORKER_RECORDED_RUNS,
   WORKER_OPERATOR_ONLY_NOTE,
   WorkerRunCollector,
   readCommandRun,
@@ -407,6 +408,64 @@ describe("the worker's last command run (autoverify reuse)", () => {
     c.observe(shellRun({ ...PYTEST_RUN, cmd: "node", args: ["server.js"], rawArgs: ["server.js"], jobId: 1 }));
     c.observe(shellRun());
     expect(c.lastCommand()).toBeUndefined();
+    expect(c.commandRuns()).toEqual([]);
+  });
+});
+
+describe("every command the worker ran, for the judge (ap3i, 15-11-2026)", () => {
+  const other = (args: string[], out: string): AgentLoopEvent =>
+    shellRun(
+      { ...PYTEST_RUN, cmd: "wc", args, rawArgs: args },
+      `$ wc ${args.join(" ")}\nexit: 0\n${out}`,
+    );
+
+  it("keeps runs oldest first, one per command line, the rerun last", () => {
+    const c = new WorkerRunCollector();
+    expect(c.commandRuns()).toEqual([]);
+    c.observe(shellRun());
+    c.observe(other(["-l", "a.py"], "12 a.py"));
+    expect(c.commandRuns().map((run) => run.lines[0])).toEqual([
+      "python -m pytest -q",
+      "wc -l a.py",
+    ]);
+    expect(c.commandRuns()[0]?.stdoutTail).toBe("3 passed in 0.02s");
+    expect(c.lastCommand()?.lines[0]).toBe("wc -l a.py");
+    c.observe(shellRun());
+    expect(c.commandRuns().map((run) => run.lines[0])).toEqual([
+      "wc -l a.py",
+      "python -m pytest -q",
+    ]);
+  });
+
+  it(`keeps at most ${WORKER_RECORDED_RUNS} distinct lines, dropping the oldest`, () => {
+    const c = new WorkerRunCollector();
+    for (let i = 0; i < WORKER_RECORDED_RUNS + 2; i += 1) {
+      c.observe(other(["-l", `f${i}.py`], `${i} f${i}.py`));
+    }
+    const lines = c.commandRuns().map((run) => run.lines[0]);
+    expect(lines).toHaveLength(WORKER_RECORDED_RUNS);
+    expect(lines[0]).toBe("wc -l f2.py");
+    expect(lines.at(-1)).toBe(`wc -l f${WORKER_RECORDED_RUNS + 1}.py`);
+  });
+
+  it("marks every earlier run stale after a write, and a rerun is fresh", () => {
+    const c = new WorkerRunCollector();
+    c.observe(shellRun());
+    c.observe(other(["-l", "a.py"], "12 a.py"));
+    c.observe(toolExecuted("os.fs.write", "ok"));
+    expect(c.commandRuns().map((run) => run.changedAfter)).toEqual([true, true]);
+    c.observe(shellRun());
+    expect(c.commandRuns().map((run) => [run.lines[0], run.changedAfter])).toEqual([
+      ["wc -l a.py", true],
+      ["python -m pytest -q", false],
+    ]);
+  });
+
+  it("returns copies the caller cannot change", () => {
+    const c = new WorkerRunCollector();
+    c.observe(shellRun());
+    c.commandRuns()[0]!.lines.push("rm -rf /");
+    expect(c.commandRuns()[0]?.lines).toEqual(["python -m pytest -q"]);
   });
 });
 

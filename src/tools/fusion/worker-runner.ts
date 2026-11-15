@@ -655,6 +655,11 @@ export interface RunWorkerTasksOptions {
      * the file tools: the judge reads them as the runtime's record.
      */
     written?: readonly string[],
+    /**
+     * Every shell run of that worker that reached its exit, oldest first
+     * (`WorkerRunCollector.commandRuns`): the judge's record of them.
+     */
+    runs?: readonly WorkerCommandRun[],
   ) => void;
 }
 
@@ -2003,7 +2008,12 @@ async function runOneTask(
         ...(commandSource === collector ? [] : commandSource.writtenPaths()),
       ]),
     ];
-    options.onWorkerCommand?.(task.id, commandSource.lastCommand(), written);
+    options.onWorkerCommand?.(
+      task.id,
+      commandSource.lastCommand(),
+      written,
+      commandSource.commandRuns(),
+    );
   } catch {
     // A listener's fault must not lose the task's row.
   }

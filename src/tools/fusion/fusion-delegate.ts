@@ -854,6 +854,9 @@ export function buildFusionDelegateTool(
       // Each task's last worker shell run, for autoverify's reuse of a
       // passing run of its own command (`reusableWorkerRun`).
       const workerCommands = new Map<string, WorkerCommandRun | undefined>();
+      // Every run of each task's latest worker that reached its exit: the
+      // judge's record of them. A retry's runs replace the first attempt's.
+      const workerRuns = new Map<string, readonly WorkerCommandRun[]>();
       // The paths each task's workers wrote through the file tools, a
       // retry's added to the first attempt's: the judge's record of them.
       const workerWrites = new Map<string, readonly string[]>();
@@ -885,8 +888,9 @@ export function buildFusionDelegateTool(
             breaker.observe(result);
             checkpoint.onTaskFinished?.(result);
           },
-          onWorkerCommand: (taskId, run, written): void => {
+          onWorkerCommand: (taskId, run, written, runs): void => {
             workerCommands.set(taskId, run);
+            workerRuns.set(taskId, runs ?? (run === undefined ? [] : [run]));
             workerWrites.set(taskId, [
               ...new Set([...(workerWrites.get(taskId) ?? []), ...(written ?? [])]),
             ]);
@@ -1430,7 +1434,7 @@ export function buildFusionDelegateTool(
               ...(workerCommands.has(row.id)
                 ? {
                     record: {
-                      run: workerCommands.get(row.id),
+                      runs: workerRuns.get(row.id) ?? [],
                       written: workerWrites.get(row.id) ?? [],
                     },
                   }
