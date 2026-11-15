@@ -53,7 +53,7 @@ export const osGitDiffTool: ToolDefinition = {
             paths,
             budgetBytes: MAX_OUTPUT_BYTES - result.stdout.length,
           })
-        : { text: "", files: 0, omitted: 0, truncated: false };
+        : { text: "", files: 0, binary: 0, omitted: 0, truncated: false };
 
     const output = result.stdout + untracked.text;
     const stats = countAddRemove(output);
@@ -74,6 +74,7 @@ export const osGitDiffTool: ToolDefinition = {
           staged,
           paths,
           untracked: untracked.files,
+          untrackedBinary: untracked.binary,
           untrackedOmitted: untracked.omitted,
         },
       },
@@ -89,8 +90,8 @@ async function diffUntracked(options: {
   context: number;
   paths: string[];
   budgetBytes: number;
-}): Promise<{ text: string; files: number; omitted: number; truncated: boolean }> {
-  const none = { text: "", files: 0, omitted: 0, truncated: false };
+}): Promise<{ text: string; files: number; binary: number; omitted: number; truncated: boolean }> {
+  const none = { text: "", files: 0, binary: 0, omitted: 0, truncated: false };
   const listArgs = ["ls-files", "--others", "--exclude-standard", "-z"];
   if (options.paths.length > 0) listArgs.push("--", ...options.paths);
   const listed = await runGit({
@@ -107,6 +108,8 @@ async function diffUntracked(options: {
 
   let text = "";
   let shown = 0;
+  let binary = 0;
+  let considered = 0;
   let truncated = false;
   for (const file of files.slice(0, MAX_UNTRACKED_FILES)) {
     if (options.signal.aborted) break;
@@ -123,8 +126,16 @@ async function diffUntracked(options: {
       timeoutMs: 30_000,
       maxOutputBytes: remaining,
     });
+    considered++;
     // --no-index exits 1 when the files differ, which is the expected case.
     if (one.exitCode !== 0 && one.exitCode !== 1) continue;
+    // Binary files (compiled caches such as __pycache__/*.pyc) carry no code
+    // to review; listing them made the orchestrator delegate a cleanup
+    // (ap1c, 15-11-2026). git status still shows them.
+    if (BINARY_DIFF.test(one.stdout)) {
+      binary++;
+      continue;
+    }
     text += one.stdout.endsWith("\n") || one.stdout.length === 0 ? one.stdout : `${one.stdout}\n`;
     shown++;
     if (one.truncated) {
@@ -132,10 +143,12 @@ async function diffUntracked(options: {
       break;
     }
   }
-  const omitted = files.length - shown;
+  const omitted = files.length - considered;
   if (omitted > 0) text += `(${omitted} more untracked file(s) not shown; pass paths to see them)\n`;
-  return { text, files: shown, omitted, truncated };
+  return { text, files: shown, binary, omitted, truncated };
 }
+
+const BINARY_DIFF = /^Binary files .* differ$/m;
 
 function parseContext(raw: unknown, fallback: number): number {
   if (raw === undefined || raw === null) return fallback;

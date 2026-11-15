@@ -52,10 +52,15 @@ describe("os.git.diff", () => {
     await runGitRaw(repo, ["commit", "-m", "init"]);
     await writeRepoFile(repo, "pkg/new.py", "def gem():\n    return 1\n");
     await writeRepoFile(repo, "notes.txt", "keep out\n");
+    // A compiled cache is binary: counted, never listed as code to review.
+    await writeRepoFile(repo, "pkg/__pycache__/new.cpython-314.pyc", "\u0000\u0001pyc\u0000");
 
     const all = await osGitDiffTool.run({}, makeCtx(repo));
     expect(all.details.empty).toBe(false);
     expect(all.details.untracked).toBe(2);
+    expect(all.details.untrackedBinary).toBe(1);
+    expect(all.details.untrackedOmitted).toBe(0);
+    expect(all.summary).not.toContain("__pycache__");
     expect(all.details.added).toBe(3);
     expect(all.summary).toContain("+def gem():");
     expect(all.summary).toContain("pkg/new.py");
