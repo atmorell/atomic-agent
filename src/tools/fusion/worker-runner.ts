@@ -1,5 +1,5 @@
 import { existsSync, readdirSync } from "node:fs";
-import type { AgentLoopEvent, RunTurnResult } from "../../agent/agent-contract.js";
+import type { AgentLoopEvent, BeforeStepHook, RunTurnResult, StepHold } from "../../agent/agent-contract.js";
 import type { ReasoningEffort } from "../../llm/provider/completion-types.js";
 import type { ApprovalGate } from "../../approval/approval-gate.js";
 import type { SessionState } from "../../session/session-state.js";
@@ -40,6 +40,7 @@ import {
 import type { DeclaredInputsRegistry } from "../os/fs/fs-declared-inputs.js";
 import {
   type CheckRepeatState,
+  CHECKS_GREEN_HOLD_NOTICE,
   checkFailureSignature,
   formatCheckResultSteer,
   formatRewriteSteer,
@@ -491,7 +492,7 @@ export interface WorkerRunnerDeps {
       taskMaxDurationMs?: number;
       toolFilter?: (name: string) => boolean;
       toolRole?: ToolRole;
-      beforeStep?: (stepIndex: number) => Promise<void>;
+      beforeStep?: BeforeStepHook;
       reasoningEffort?: ReasoningEffort;
       maxOutputTokens?: number;
       signal?: AbortSignal;
@@ -1407,6 +1408,11 @@ async function runOneTask(
   let changedSinceCheck = false;
   let pendingCheck: Promise<void> | undefined;
   let lastCheckSteer: string | undefined;
+  // The last finished run had every check pass: the next step may only
+  // reply (k8ag, 16-11-2026: green at 223 s, advice alone did not close
+  // the worker in 4 of 7 green runs; it wrote its own tests to 600 s).
+  // A change after it clears it until the checks have run again.
+  let checksGreen = false;
   // Per check index: the last failure's signature and how many runs in a
   // row returned it. Measured (k8z): one wrong assert was steered in 8
   // times until the run timed out; the third identical failure now stops
@@ -1463,6 +1469,8 @@ async function runOneTask(
           )
         : run.outcomes;
       const failed = outcomes.filter((outcome) => !outcome.ok).length;
+      // Green only for the code it ran: a write during the run reopens.
+      checksGreen = failed === 0 && !changedSinceCheck;
       const repeats = repeatStatesFor(outcomes);
       const silent = [...repeats.values()].filter((state) => state === "silent").length;
       const stopped = [...repeats.values()].filter((state) => state !== "doubt").length;
@@ -1821,26 +1829,36 @@ async function runOneTask(
   // fan-out runs them all again afterwards anyway.
   const checksDone = new AbortController();
   const checkSignal = AbortSignal.any([turnSignal, checksDone.signal]);
-  const waitForCheck = async (): Promise<void> => {
+  // Closes the worker once its checks are green (`checksGreen`).
+  const greenHold: StepHold = { terminalOnly: true, notice: CHECKS_GREEN_HOLD_NOTICE };
+  const waitForCheck = async (stepIndex: number): Promise<StepHold | undefined> => {
     const pending = pendingCheck;
-    if (pending === undefined || checkSignal.aborted) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let onAbort: (() => void) | undefined;
-    try {
-      await Promise.race([
-        pending,
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, CHECK_AFTER_CHANGE_WAIT_MS);
-        }),
-        new Promise<void>((resolve) => {
-          onAbort = () => resolve();
-          checkSignal.addEventListener("abort", onAbort, { once: true });
-        }),
-      ]);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-      if (onAbort !== undefined) checkSignal.removeEventListener("abort", onAbort);
+    if (checkSignal.aborted) return undefined;
+    if (pending !== undefined) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
+      try {
+        await Promise.race([
+          pending,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, CHECK_AFTER_CHANGE_WAIT_MS);
+          }),
+          new Promise<void>((resolve) => {
+            onAbort = () => resolve();
+            checkSignal.addEventListener("abort", onAbort, { once: true });
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        if (onAbort !== undefined) checkSignal.removeEventListener("abort", onAbort);
+      }
     }
+    if (!checksGreen || checkSignal.aborted) return undefined;
+    deps.logger?.info("fusion: worker's checks all passed — this step takes only reply", {
+      taskId: task.id,
+      stepIndex,
+    });
+    return greenHold;
   };
   try {
     const turn = await deps.runTurn(session, brief, {
@@ -1962,6 +1980,7 @@ async function runOneTask(
             wroteSomething = true;
             wroteThisStep = true;
             changedSinceCheck = true;
+            checksGreen = false;
             try {
               checkRewrite(result.tool, result.details);
             } catch {

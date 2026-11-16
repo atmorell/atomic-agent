@@ -514,6 +514,21 @@ export type TaskStopCause =
   | "no_progress"
   | "credit_exhausted";
 
+/**
+ * What a `beforeStep` hook may ask of the step it held: only `reply` and
+ * `finish` run there, with `notice` in `### notice`. A fusion worker whose
+ * task's checks all passed is closed this way (k8ag, 16-11-2026: green at
+ * 223 s, the worker kept going to the 600 s ceiling). Unlike the reserved
+ * final step, a held step that does not close leaves the turn open.
+ */
+export interface StepHold {
+  terminalOnly: true;
+  notice: string;
+}
+
+/** `RunTurnOptions.beforeStep`. */
+export type BeforeStepHook = (stepIndex: number) => Promise<void | StepHold>;
+
 export interface RunTurnOptions {
   /** Frozen policy for this turn, its workers and background reflection. */
   modelModePolicy?: import("../llm/model-mode.js").ModelModePolicy;
@@ -633,9 +648,10 @@ export interface RunTurnOptions {
    * worker holds its next step until the runtime's run of its task's
    * checks after a change has steered the result (worker-runner.ts).
    * The hook bounds its own wait; one that throws is logged and the
-   * step goes on. Not counted in the step's duration.
+   * step goes on. Not counted in the step's duration. A `StepHold` it
+   * returns narrows that step to `reply`/`finish` (see `StepHold`).
    */
-  beforeStep?: (stepIndex: number) => Promise<void>;
+  beforeStep?: BeforeStepHook;
   /**
    * What the turn does when the managed local model runs out of memory
    * (ATO-334): `ask` the person first (a chat they are watching), or

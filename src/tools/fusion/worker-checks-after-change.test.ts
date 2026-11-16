@@ -15,6 +15,7 @@ import type { DelegateTask } from "./delegate-args.js";
 import {
   CHECK_DOUBT_NOTE,
   CHECK_STOP_NOTE,
+  CHECKS_GREEN_HOLD_NOTICE,
   CHECKS_RUN_BY_RUNTIME_RULE,
   checkFailureSignature,
   formatCheckResultSteer,
@@ -55,6 +56,8 @@ function harness(dir: string, script: Step[], runChecks?: ContractCheckRunner) {
   const briefs: string[] = [];
   /** What each step read from the inbox, by step index. */
   const readAt: string[][] = [];
+  /** What `beforeStep` returned for each step (a hold, or undefined). */
+  const holds: unknown[] = [];
   let writes = 0;
   const deps: WorkerRunnerDeps = {
     runTurn: async (session: SessionState, message: string, options: TurnOptions) => {
@@ -62,7 +65,7 @@ function harness(dir: string, script: Step[], runChecks?: ContractCheckRunner) {
       inbox.open(session.id);
       const written = new Set<string>();
       for (let i = 0; i < script.length; i += 1) {
-        await options.beforeStep?.(i);
+        holds.push(await options.beforeStep?.(i));
         options.eventHook?.({ type: "step_started", stepIndex: i } as never);
         readAt.push([...inbox.drain(session.id)]);
         for (const file of script[i]!.writes ?? []) {
@@ -93,7 +96,7 @@ function harness(dir: string, script: Step[], runChecks?: ContractCheckRunner) {
     steerWorker: (sessionId, text) => inbox.push(sessionId, text),
     ...(runChecks === undefined ? {} : { runChecks }),
   };
-  return { deps, briefs, readAt };
+  return { deps, briefs, readAt, holds };
 }
 
 /** A runner that answers each spec with the next verdict list; records every call. */
@@ -260,6 +263,45 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     expect(h.readAt[4]![0]).toContain("all passed");
     expect(h.readAt[5]![0]).toContain("1 of 2 failed");
     expect(h.readAt[5]![0]).not.toContain(CHECK_DOUBT_NOTE);
+  });
+
+  // k8ag: green at 223 s, the worker kept going to the 600 s limit.
+  it("holds the step after an all-green run to reply only", async () => {
+    const { runner } = fakeRunner([[{ ok: true }, { ok: true }]]);
+    const h = harness(dir, [{ writes: ["core.py", "cli.py"] }, {}], runner);
+    await run(h.deps);
+    expect(h.holds[0]).toBeUndefined();
+    expect(h.holds[1]).toEqual({ terminalOnly: true, notice: CHECKS_GREEN_HOLD_NOTICE });
+    expect(h.readAt[1]![0]).toContain("all passed");
+  });
+
+  it("holds nothing while a check fails or before every file exists", async () => {
+    const { runner } = fakeRunner([[{ ok: false, error: "exit 1" }, { ok: true }]]);
+    const failing = harness(dir, [{ writes: ["core.py", "cli.py"] }, {}], runner);
+    await run(failing.deps);
+    expect(failing.holds).toEqual([undefined, undefined]);
+    const green = fakeRunner([[{ ok: true }, { ok: true }]]);
+    const partial = harness(dir, [{ writes: ["core.py"] }, {}], green.runner);
+    await run(partial.deps, ["core.py", "missing.py"]);
+    expect(green.calls).toHaveLength(0);
+    expect(partial.holds).toEqual([undefined, undefined]);
+  });
+
+  it("reopens after a change and holds again only once the checks are green", async () => {
+    const { runner } = fakeRunner([
+      [{ ok: true }, { ok: true }],
+      [{ ok: false, error: "exit 1" }, { ok: true }],
+      [{ ok: true }, { ok: true }],
+    ]);
+    const h = harness(
+      dir,
+      [{ writes: ["core.py", "cli.py"] }, { writes: ["core.py"] }, { writes: ["core.py"] }, {}],
+      runner,
+    );
+    await run(h.deps);
+    expect(h.holds[1]).toMatchObject({ terminalOnly: true });
+    expect(h.holds[2]).toBeUndefined();
+    expect(h.holds[3]).toMatchObject({ terminalOnly: true });
   });
 
   it("tells the worker in its brief only when the runtime will run them", async () => {

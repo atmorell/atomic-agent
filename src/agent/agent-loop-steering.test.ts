@@ -361,6 +361,43 @@ describe("AgentLoop mid-turn steering", () => {
     expect(tails).toHaveLength(2);
   });
 
+  // k8ag: a fusion worker whose checks all passed kept working to the
+  // 600 s limit; its runner now holds the next step to reply/finish.
+  it("narrows a step beforeStep holds to reply/finish, with the hold's notice", async () => {
+    const { loop, tails } = buildLoop({ inbox: new SteeringInbox(), steps: 2 });
+    const result = await loop.runTurn(createEmptySessionState({ id: "s-hold", workingDir }), {
+      userMessage: "go",
+      maxSteps: 6,
+      signal: new AbortController().signal,
+      beforeStep: async (stepIndex) =>
+        stepIndex === 1 ? { terminalOnly: true, notice: "Every check passed: reply." } : undefined,
+    });
+    expect(tails[0]).not.toContain("Every check passed");
+    expect(tails[1]).toContain("### notice");
+    expect(tails[1]).toContain("Every check passed: reply.");
+    expect(tails[1]).not.toContain("This is the final allowed step");
+    expect(result.reason).toBe("reply");
+    expect(result.stopCause).toBeUndefined();
+  });
+
+  it("refuses a non-terminal call on a held step but leaves the turn open", async () => {
+    const { loop, tails } = buildLoop({ inbox: new SteeringInbox(), steps: 3 });
+    const result = await loop.runTurn(createEmptySessionState({ id: "s-hold-open", workingDir }), {
+      userMessage: "go",
+      maxSteps: 6,
+      signal: new AbortController().signal,
+      beforeStep: async (stepIndex) =>
+        stepIndex === 1 ? { terminalOnly: true, notice: "Every check passed: reply." } : undefined,
+    });
+    const noops = result.session.turns.filter(
+      (turn) => turn.kind === "tool_result" && turn.tool === "noop",
+    );
+    expect(noops.map((turn) => (turn as { status: string }).status)).toEqual(["ok", "error"]);
+    expect(tails).toHaveLength(3);
+    expect(result.reason).toBe("reply");
+    expect(result.stopCause).toBeUndefined();
+  });
+
   it("behaves exactly as before when no inbox is wired in", async () => {
     const { loop, tails } = buildLoop({});
     const result = await loop.runTurn(

@@ -32,7 +32,7 @@ import type { VoteStore } from "../memory/voting/index.js";
 import type { SkillRegistry } from "../skills/skill-registry.js";
 import type { CapabilitiesSummary, SkillCatalogEntry, ToolDescriptor } from "../prompt/stable-prefix.js";
 import type { AgentLoop } from "../agent/agent-loop.js";
-import type { AgentLoopEvent, RunTurnResult } from "../agent/agent-contract.js";
+import type { AgentLoopEvent, BeforeStepHook, RunTurnResult } from "../agent/agent-contract.js";
 import type { GoalSpec, GoalState } from "../agent/goal/index.js";
 import type { SessionStore, FusionWorkerMeta, SessionState } from "../session/index.js";
 import type { TaskRunner, TaskStore } from "../tasks/index.js";
@@ -456,7 +456,7 @@ export interface AgentRuntime {
       /** The turn's tool role (see `RunTurnOptions.toolRole`); a worker is a `builder`. */
       toolRole?: ToolRole;
       /** See `RunTurnOptions.beforeStep` — a fusion worker waits for its checks. */
-      beforeStep?: (stepIndex: number) => Promise<void>;
+      beforeStep?: BeforeStepHook;
       /** See `RunTurnOptions.reasoningEffort` — a fusion worker's setting. */
       reasoningEffort?: ReasoningEffort;
       /** See `RunTurnOptions.maxOutputTokens` — a fusion worker's cap. */
@@ -524,7 +524,7 @@ export interface AgentRuntime {
       toolFilter?: (name: string) => boolean;
       toolRole?: ToolRole;
       /** See `runTurn`'s `beforeStep`. */
-      beforeStep?: (stepIndex: number) => Promise<void>;
+      beforeStep?: BeforeStepHook;
       reasoningEffort?: ReasoningEffort;
       maxOutputTokens?: number;
       /** See `runTurn`'s `interactive`. */

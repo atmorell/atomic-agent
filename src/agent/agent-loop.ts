@@ -8,7 +8,7 @@ import { createTurnLoopState } from "./turn/turn-state.js";
 import { checkpointStep } from "./turn/turn-checkpoint.js";
 import { recoverTurnStep, abortableSleep, reportTurnFailure } from "./turn/turn-recovery.js";
 import { recoverFromOutOfMemory } from "./turn/out-of-memory-recovery.js";
-import type { AgentLoopDependencies, RunTurnOptions, RunTurnResult } from "./agent-contract.js";
+import type { AgentLoopDependencies, RunTurnOptions, RunTurnResult, StepHold } from "./agent-contract.js";
 export type { AgentLoopDependencies, ReflectionSegmentationConfig, ResolvedTurnLlmSlice, MemoryContextProviderInput, MemoryContext, MemoryContextProvider, LessonLifecycleOutcome, LessonLifecycleHook, SteeringChannel, TaskStopCause, RunTurnOptions, AgentLoopReason, AgentLoopEvent, RunTurnResult } from "./agent-contract.js";
 import { prepareAgentTurn, prepareTurnPolicies, prepareTurnBudgets, createTurnLoopTracker } from "./turn/turn-preparation.js";
 import { refreshMemoryContext, createSurfacedMemoryTracker } from "./turn/turn-memory-context.js";
@@ -299,9 +299,11 @@ export class AgentLoop {
           await this.deps.profileManager.refreshIfStale();
         }
       }
+      let hold: StepHold | undefined;
       if (options.beforeStep) {
         try {
-          await options.beforeStep(i);
+          const held = await options.beforeStep(i);
+          if (typeof held === "object" && held !== null && held.terminalOnly === true) hold = held;
         } catch (error) {
           this.deps.logger?.warn("beforeStep hook failed; the step goes on", {
             sessionId: state.id,
@@ -359,6 +361,9 @@ export class AgentLoop {
       if (outOfTime) turn.stopCause = "time_ceiling";
       else if (outOfBudget) turn.stopCause = "cost_ceiling";
       const finalizationStep = i === stepCeiling - 1 || outOfTime || outOfBudget;
+      // A `beforeStep` hold narrows this step like the reserved final
+      // one, but no ceiling bit: the turn goes on if it does not close.
+      const terminalOnlyStep = finalizationStep || hold !== undefined;
       // The stalled-review phase this step runs under, read before the
       // prompt is built (`review-stall.ts`): the notice joins the step's
       // `### notice` — inside `noticeForThisStep`, so a retry of the
@@ -369,7 +374,7 @@ export class AgentLoop {
       // `fusion.delegate`, which outranks the stalled-review cut (a
       // subset of it). Not on the reserved final step.
       let replanSet: StepToolSet | null = null;
-      if (replan !== null && !finalizationStep) {
+      if (replan !== null && !terminalOnlyStep) {
         replanSet = replanToolSet(replan);
         const taken = takeReplanNotice(replan);
         replan = taken.state;
@@ -381,7 +386,7 @@ export class AgentLoop {
         }
       }
       let stallSignal: ReviewStallSignal | null = null;
-      if (reviewStall !== null && !finalizationStep) {
+      if (reviewStall !== null && !terminalOnlyStep) {
         stallSignal = reviewStallSignal(reviewStall);
         if (stallSignal !== null) {
           const taken = takeReviewStallNotice(reviewStall, stallSignal);
@@ -464,17 +469,21 @@ export class AgentLoop {
             stepIndex: i,
             signal: options.signal,
             requestSignal: requestDeadline.signal,
-            ...(finalizationStep || noticeForThisStep !== undefined
+            ...(terminalOnlyStep || noticeForThisStep !== undefined
               ? {
                   transientNotice: [
                     noticeForThisStep,
-                    ...(finalizationStep ? [finalizationNotice] : []),
+                    ...(finalizationStep
+                      ? [finalizationNotice]
+                      : hold !== undefined
+                        ? [hold.notice]
+                        : []),
                   ]
                     .filter((notice): notice is string => notice !== undefined)
                     .join("\n\n"),
                 }
               : {}),
-            ...(finalizationStep ? { terminalOnly: true } : {}),
+            ...(terminalOnlyStep ? { terminalOnly: true } : {}),
             ...(replanSet !== null
               ? { toolSet: replanSet }
               : stallSignal?.phase === "cut"

@@ -268,7 +268,17 @@ export function formatRewriteSteer(path: string): string {
  * before the next step. Rendered only when that is wired.
  */
 export const CHECKS_RUN_BY_RUNTIME_RULE =
-  "- The runtime runs your task's CHECKS itself after every step that changes a file (once all your FILES exist) and tells you the result before your next step. Do not write or run your own copies of them; run only a case your task names that no check covers.";
+  "- The runtime runs your task's CHECKS itself after every step that changes a file (once all your FILES exist) and tells you the result before your next step. Do not write or run your own copies of them. When they all pass, your task is done and your next step takes only reply.";
+
+/**
+ * The `### notice` of the step after a run where every check of the
+ * worker's task passed: that step takes only `reply`/`finish`
+ * (`worker-runner.ts`). Measured (k8ag, 16-11-2026): green at 223 s, the
+ * core worker then wrote its own tests with wrong asserts and chased them
+ * to the 600 s limit; advice to reply closed it in 3 of 7 green runs.
+ */
+export const CHECKS_GREEN_HOLD_NOTICE =
+  "Every check of your task passed: this step takes only reply. Name the files you wrote and what each does.";
 
 const CHECK_STEER_SPEC_CHARS = 140;
 const CHECK_STEER_MAX_FAILURES = 3;
@@ -331,7 +341,7 @@ export function formatCheckResultSteer(
     .map((outcome, i) => ({ outcome, check: checks[i] ?? {}, state: repeats.get(i) }))
     .filter(({ outcome }) => !outcome.ok);
   if (failed.length === 0) {
-    return `The runtime ran your task's ${total} check${total === 1 ? "" : "s"} after your last change: all passed. If every part of your task is written, reply now — do not read your files again or re-run the checks. Run only a case your task names that no check covers.`;
+    return `The runtime ran your task's ${total} check${total === 1 ? "" : "s"} after your last change: all passed. Your task is done: reply now, naming the files you wrote.`;
   }
   const line = ({ outcome, check }: (typeof failed)[number]) =>
     `- \`${describeCheckSpec(check)}\`: ${outcome.detail}`;

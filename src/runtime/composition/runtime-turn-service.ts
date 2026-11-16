@@ -1,7 +1,7 @@
 import type { AtomicAgentConfig } from "../../config/index.js";
 import { getConfig } from "../../config/index.js";
 import type { AgentLoop } from "../../agent/agent-loop.js";
-import type { RunTurnResult } from "../../agent/agent-contract.js";
+import type { BeforeStepHook, RunTurnResult } from "../../agent/agent-contract.js";
 import type { LlmStreamParams } from "../../agent/step/step-contract.js";
 import type { CompletionResult } from "../../llm/llama-server-client.js";
 import type { ReasoningEffort } from "../../llm/provider/completion-types.js";
@@ -135,7 +135,7 @@ export function createRuntimeTurnService(
     taskMaxCostUsd?: number;
     toolFilter?: (name: string) => boolean;
     toolRole?: ToolRole;
-    beforeStep?: (stepIndex: number) => Promise<void>;
+    beforeStep?: BeforeStepHook;
     reasoningEffort?: ReasoningEffort;
     maxOutputTokens?: number;
     interactive?: boolean;
@@ -360,7 +360,7 @@ export function createRuntimeTurnService(
       taskMaxCostUsd?: number;
       toolFilter?: (name: string) => boolean;
       toolRole?: ToolRole;
-      beforeStep?: (stepIndex: number) => Promise<void>;
+      beforeStep?: BeforeStepHook;
       reasoningEffort?: ReasoningEffort;
       maxOutputTokens?: number;
       interactive?: boolean;
@@ -633,7 +633,7 @@ export function createRuntimeTurnService(
       taskMaxCostUsd?: number;
       toolFilter?: (name: string) => boolean;
       toolRole?: ToolRole;
-      beforeStep?: (stepIndex: number) => Promise<void>;
+      beforeStep?: BeforeStepHook;
       reasoningEffort?: ReasoningEffort;
       maxOutputTokens?: number;
       interactive?: boolean;

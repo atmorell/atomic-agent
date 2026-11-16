@@ -9,7 +9,7 @@ TurnController serializes turns on the same session and permits independent sess
 
 Public runTurn enqueues; executeTurn is for a caller that already holds the lock, notably sidecar integration. Nesting the queue inside itself deadlocks. Shared browser/backend resources remain shared even though sessions are independent.
 
-Steering enters a running turn at its next checkpoint. A turn's optional `beforeStep` hook is awaited at each step boundary before the inbox is drained, so a note pushed while it runs joins that step (a fusion worker waits there for its checks); it bounds its own wait, and one that throws is logged and the step goes on. A false return means the message was not accepted; each ingress must apply its documented queue/new-turn policy rather than drop it. Query isBusy is not an atomic steering acceptance test.
+Steering enters a running turn at its next checkpoint. A turn's optional `beforeStep` hook is awaited at each step boundary before the inbox is drained, so a note pushed while it runs joins that step (a fusion worker waits there for its checks); it bounds its own wait, and one that throws is logged and the step goes on. A `StepHold` it returns narrows that step to `reply`/`finish` with the hold's notice; unlike the reserved final step, the turn goes on if that step does not close. A false return means the message was not accepted; each ingress must apply its documented queue/new-turn policy rather than drop it. Query isBusy is not an atomic steering acceptance test.
 
 ## Resources
 
