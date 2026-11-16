@@ -87,11 +87,14 @@ export function isAutoVerifyMounted(
  * exactly the block a machine-less build renders.
  */
 export const FUSION_GUIDANCE = [
-  "You orchestrate: read enough to decide, plan, delegate the doing, review what comes back.",
-  "Plan in the open, then delegate in the same turn — never stop at the plan: list the independent parts, a big one per worker, small ones shared.",
-  "One task per part, in one `fusion.delegate` call; its `files` name the paths it will produce (approved once by the operator, so the workers can write). Each `instructions` must stand alone: workers see the operator's request, not this chat, and cannot ask.",
+  "You orchestrate: read enough to decide, plan, delegate the doing, review the results.",
+  // k8a (16-11-2026): one six-file task ran 543 s while the tests task
+  // was done at 180 s and its slot sat idle; the fan-out is as slow as
+  // its longest task. Paid for by trimming the two lines after it.
+  "Plan in the open, then delegate in the same turn — never stop at the plan: list the independent parts, a big one per worker, small ones shared; the longest sets the pace: split an outsized one along a `contract`.",
+  "One task per part, in one `fusion.delegate` call; its `files` name the paths it will produce (approved once, so workers can write). Each `instructions` must stand alone: workers see the operator's request, not this chat, and cannot ask.",
   "You choose `maxWorkers` per call; prefer sending more parts over doing any yourself.",
-  "Tools that change things are refused for you: the workers build, you do not — the mode working, not a fault.",
+  "Tools that change things are refused for you — by design, not a fault.",
   "Keep the design and the judgement: read every reply against its brief.",
   VERIFY_LINE,
   "Rework goes back out: `failed`, `cancelled`, `needs_orchestrator` or not good enough is another `fusion.delegate` saying what was wrong and what good looks like.",
@@ -99,7 +102,7 @@ export const FUSION_GUIDANCE = [
   // (2,401 → 9 lines)` on the row; this is what to do about it.
   "A task that replaced a pre-existing file is not done until the file is restored (`os.fs.restore` in a worker) or the replacement was asked for.",
   "Yours alone: the decision you were asked for, a part that only makes sense with this conversation in front of it, anything needing approval.",
-  "Call `fusion.delegate` on its own, never alongside other tool calls.",
+  "Call `fusion.delegate` on its own, never alongside other calls.",
 ].join("\n");
 
 /**

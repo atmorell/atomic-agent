@@ -130,6 +130,13 @@ describe("the ### fusion prefix section", () => {
     );
   });
 
+  it("says the longest task sets the pace and an outsized part is split along a contract (k8a)", () => {
+    // One six-file task ran 543 s while its sibling was done at 180 s:
+    // the orchestrator followed "a big one per worker" literally.
+    expect(FUSION_GUIDANCE).toContain("the longest sets the pace");
+    expect(FUSION_GUIDANCE).toMatch(/split an outsized one along a `contract`/);
+  });
+
   it("stays short enough to live in every turn's prefix", () => {
     // Every byte here is paid on every step of every fusion turn. The
     // machine lines carry capacity as well as a count — slots, a
