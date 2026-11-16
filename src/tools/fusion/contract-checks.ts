@@ -101,8 +101,13 @@ function escapeRegExp(text: string): string {
 /**
  * Whether `content` carries the provide. A symbol is matched as a whole
  * word so `HD.Ship` does not pass on `HD.Shipyard`; the boundaries are
- * lookarounds because `\b` misreads names that start or end in `$`. An
- * id is the attribute, in either quote. Everything else is the literal.
+ * lookarounds because `\b` misreads names that start or end in `$`. A
+ * symbol the orchestrator wrote as several names (`gem/hent`, `a, b`)
+ * is provided when every name is: no file can hold the slash-joined
+ * text, so it read red on a worker that wrote both (k8ay, 16-11-2026: a
+ * retry and two repair rounds, about 4 minutes). Dotted names stay one
+ * name. An id is the attribute, in either quote. Everything else is the
+ * literal.
  */
 export function contentProvides(
   content: string,
@@ -110,7 +115,11 @@ export function contentProvides(
 ): boolean {
   const name = escapeRegExp(provide.name);
   if (provide.kind === "symbol") {
-    return new RegExp(`(?<![\\w$])${name}(?![\\w$])`).test(content);
+    const parts = provide.name.split(/[/,\s]+/).filter((part) => part.length > 0);
+    const names = parts.length > 1 ? parts : [provide.name];
+    return names.every((one) =>
+      new RegExp(`(?<![\\w$])${escapeRegExp(one)}(?![\\w$])`).test(content),
+    );
   }
   if (provide.kind === "id") {
     return new RegExp(`\\bid\\s*=\\s*(?:"${name}"|'${name}')`).test(content);

@@ -42,6 +42,17 @@ describe("contentProvides", () => {
     expect(contentProvides("function x$init() {}", { kind: "symbol", name: "$init" })).toBe(false);
   });
 
+  // k8ay (16-11-2026): the orchestrator named `gem/hent` as one provide;
+  // the worker wrote both functions and the check read red anyway.
+  it("matches a symbol written as several names when every name is there", () => {
+    const both = "def gem(sti, data):\n    ...\n\ndef hent(sti):\n    ...\n";
+    expect(contentProvides(both, { kind: "symbol", name: "gem/hent" })).toBe(true);
+    expect(contentProvides(both, { kind: "symbol", name: "gem, hent" })).toBe(true);
+    expect(contentProvides("def gem(sti, data):\n", { kind: "symbol", name: "gem/hent" })).toBe(false);
+    // Each name is still a whole word.
+    expect(contentProvides("def gemme(): ...\ndef hent(): ...", { kind: "symbol", name: "gem/hent" })).toBe(false);
+  });
+
   it("matches an id attribute in either quote and nothing else", () => {
     expect(contentProvides('<button id="btn-launch">', { kind: "id", name: "btn-launch" })).toBe(true);
     expect(contentProvides("<button id='btn-launch'>", { kind: "id", name: "btn-launch" })).toBe(true);
