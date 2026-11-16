@@ -5,7 +5,7 @@ import { compressToolResult } from "../../../compressor/result-compressor.js";
 import { resolveUserPath } from "../expand-home.js";
 import { checkForeignOwner, refuseForeignOwnerWrite } from "./fs-owner-guard.js";
 import { categorizeFsMutation } from "./fs-approval-scope.js";
-import { checkChangedFile } from "./fs-content-check.js";
+import { checkChangedSource } from "./fs-python-check.js";
 import {
   checkInputReplacement,
   refuseInputReplacement,
@@ -267,8 +267,8 @@ async function noteCreated(
 }
 
 /**
- * Check what now sits at `target` (see `fs-parse-check.ts` and
- * `fs-content-check.ts`). An append is judged on the whole file, not the
+ * Check what now sits at `target` (see `fs-parse-check.ts`,
+ * `fs-python-check.ts` and `fs-content-check.ts`). An append is judged on the whole file, not the
  * chunk. Any failure to check is silence: the write already succeeded
  * and is reported as such.
  */
@@ -284,7 +284,7 @@ async function parseWarningAfterWrite(
       if ((await stat(target)).size > PARSE_CHECK_MAX_CHARS) return null;
       written = await readFile(target, "utf8");
     }
-    return checkChangedFile({
+    return await checkChangedSource({
       absolute: target,
       workingDir,
       change: "write",

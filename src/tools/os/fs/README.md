@@ -32,7 +32,7 @@ The advertised wire schema does not replace runtime validation. For example, has
 
 [The masked-secret guard](fs-masked-secret-guard.ts) refuses a write, edit or patch that would add a `[redacted:…]` marker (from masked tool output, ATO-1077) the file did not already hold, before approval and with nothing written.
 
-[Parse checks](fs-parse-check.ts) and [content checks](fs-content-check.ts) own advisory diagnostics and their conservative skip conditions. Read file handles close in the operation's cleanup; watch owns its bounded one-shot watcher and closes it after collection; grep runs through the injected command runner. Trash delegates to platform trash facilities, rather than silently becoming permanent deletion.
+[Parse checks](fs-parse-check.ts), the `.py` [compile check](fs-python-check.ts) (it names the string that runs over code when a triple quote is unterminated) and [content checks](fs-content-check.ts) own advisory diagnostics and their conservative skip conditions. Read file handles close in the operation's cleanup; watch owns its bounded one-shot watcher and closes it after collection; grep runs through the injected command runner. Trash delegates to platform trash facilities, rather than silently becoming permanent deletion.
 
 ## Validation
 

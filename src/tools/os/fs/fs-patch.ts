@@ -10,7 +10,7 @@ import {
 } from "../../../compressor/result-compressor.js";
 import { resolveUserPath } from "../expand-home.js";
 import { checkForeignOwner, refuseForeignOwnerWrite } from "./fs-owner-guard.js";
-import { checkChangedFile } from "./fs-content-check.js";
+import { checkChangedSource } from "./fs-python-check.js";
 import { withParseWarning } from "./fs-parse-check.js";
 import { dryRunFile, type PreviewOutcome } from "./fs-patch-preview.js";
 import {
@@ -154,7 +154,7 @@ export function buildOsFsPatchTool(
         await writeFile(outcome.absolute, patched, "utf8");
         await recordOwnWrite(ctx.fileVersions, outcome.absolute);
         guards.push(await guardAfterPatch(options, ctx, outcome, patched));
-        const warning = parseWarningAfterPatch(
+        const warning = await parseWarningAfterPatch(
           outcome,
           patched,
           ctx.workingDir,
@@ -212,14 +212,14 @@ async function guardAfterPatch(
  * unified-diff deletion, not a broken file, and a file the patch created
  * has no "before" to compare.
  */
-function parseWarningAfterPatch(
+async function parseWarningAfterPatch(
   outcome: PreviewOutcome,
   patched: string,
   workingDir: string,
-): string | null {
+): Promise<string | null> {
   if (patched.length === 0) return null;
   const original = outcome.originalContent ?? "";
-  return checkChangedFile({
+  return checkChangedSource({
     absolute: outcome.absolute,
     workingDir,
     change: "patch",

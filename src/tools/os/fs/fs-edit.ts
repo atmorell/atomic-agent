@@ -9,7 +9,7 @@ import {
 } from "../../../compressor/result-compressor.js";
 import { resolveUserPath } from "../expand-home.js";
 import { checkForeignOwner, refuseForeignOwnerWrite } from "./fs-owner-guard.js";
-import { checkChangedFile } from "./fs-content-check.js";
+import { checkChangedSource } from "./fs-python-check.js";
 import {
   clampDiffPreview,
   DIFF_SUMMARY_MAX_CHARS,
@@ -149,7 +149,7 @@ async function editFile(
   // an edit that turns a parsing file into a broken one — the classic
   // blind `replaceAll` — is told so, with the count, so the model
   // undoes it instead of stacking another edit on top.
-  const parseWarning = checkChangedFile({
+  const parseWarning = await checkChangedSource({
     absolute,
     workingDir: ctx.workingDir,
     change: "edit",
