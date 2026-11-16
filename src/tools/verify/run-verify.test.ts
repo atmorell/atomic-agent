@@ -121,6 +121,30 @@ describe("runVerify — command", () => {
     expect(existsSync(copies[0]!)).toBe(false);
   });
 
+  it("lets a check that names the exit code rule on it: an error path exiting 1 passes (k8af)", async () => {
+    const script = "console.error('Fejl: ugyldigt tal'); process.exit(1)";
+    const pass = await runVerify(
+      { kind: "command", cmd: NODE, args: ["-e", script], checks: ["exit != 0", 'stderr contains "Fejl:"'] },
+      ctx(),
+    );
+    expect(pass.ok).toBe(true);
+    expect(pass.exitCode).toBe(1);
+    expect(pass.summary.split("\n")[0]).toBe("verify.run command: ok");
+    expect(pass.hint).toBeUndefined();
+    const named = await runVerify({ kind: "command", cmd: NODE, args: ["-e", script], checks: ["exit 1"] }, ctx());
+    expect(named.ok).toBe(true);
+    // A check that does not name the exit code leaves it to the run: not 0, not ok.
+    const unnamed = await runVerify(
+      { kind: "command", cmd: NODE, args: ["-e", script], checks: ['stderr contains "Fejl:"'] },
+      ctx(),
+    );
+    expect(unnamed.ok).toBe(false);
+    expect(unnamed.checks?.map((c) => c.ok)).toEqual([true]);
+    // The exit check still has to pass.
+    const wrong = await runVerify({ kind: "command", cmd: NODE, args: ["-e", script], checks: ["exit 2"] }, ctx());
+    expect(wrong.ok).toBe(false);
+  });
+
   it("is ok on exit 0 with every check passing, and runs a command line through the shell", async () => {
     const out = await runVerify(
       { kind: "command", cmd: `${JSON.stringify(NODE)} -e "console.log('a b')" && echo done`, checks: ["exit 0", 'stdout contains "done"'] },

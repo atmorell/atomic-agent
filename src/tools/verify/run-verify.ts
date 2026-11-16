@@ -15,7 +15,7 @@ import type { ProbeSample } from "./page-probe-script.js";
 import { runCommandKind } from "./run-command-kind.js";
 import { type BrowserLauncher, defaultBrowserLauncher, type PageRunOutcome, runPageKind } from "./run-page-kind.js";
 import { type FetchLike, type RequestOutcome, runServiceKind } from "./run-service-kind.js";
-import { type CheckOutcome, type CheckSubject, evaluateChecks } from "./verify-checks.js";
+import { type CheckOutcome, type CheckSubject, evaluateChecks, tokenizeCheck } from "./verify-checks.js";
 import { parseVerifyRunArgs, type VerifyRunArgs, type VerifyRunKind } from "./verify-run-args.js";
 import { renderVerifyRunSummary } from "./verify-run-summary.js";
 import { terminalAppHint } from "./terminal-app-hint.js";
@@ -129,13 +129,30 @@ function finish(
   return { ...withoutSummary, summary: renderVerifyRunSummary({ ...withoutSummary, summary: "" }) };
 }
 
+/**
+ * True when a check rules on the exit code (`exit 1`, `exit != 0`): the
+ * exit code is then that check's to judge, not the run's. Otherwise an
+ * error-path check — bad input exits 1 — could never pass (k8af,
+ * 16-11-2026: `exit != 0` and `stderr contains "Fejl:"` both ok, the
+ * run FAILED, and the worker hunted a defect that was not there).
+ */
+function checksRuleOnExit(checks: readonly string[] | undefined): boolean {
+  return (checks ?? []).some((c) => tokenizeCheck(c.trim())[0] === "exit");
+}
+
 async function runInWorkspace(args: VerifyRunArgs, dir: string, isolated: boolean, ctx: VerifyRunContext, started: number): Promise<VerifyRunResult> {
   const cwd = await resolveRunCwd(dir, ctx.workingDir, args.cwd);
   const common = { kind: args.kind, isolated };
   if (args.kind === "command") {
     const out = await runCommandKind(args, { cwd, signal: ctx.signal });
-    const runOk = out.spawnError === undefined && !out.timedOut && out.exitCode === 0;
-    const hint = runOk ? undefined : terminalAppHint(out.stdout, out.stderr);
+    // A process that never started, timed out or was killed by a signal
+    // fails whatever the checks say; a real exit code is the checks' call
+    // when one names it, else it must be 0.
+    const ranClean = out.spawnError === undefined && !out.timedOut && out.exitCode === 0;
+    const runOk =
+      ranClean ||
+      (out.spawnError === undefined && !out.timedOut && out.exitCode !== null && checksRuleOnExit(args.checks));
+    const hint = ranClean ? undefined : terminalAppHint(out.stdout, out.stderr);
     return finish(
       { ...common, ...(hint === undefined ? {} : { hint }), commandLine: out.commandLine, exitCode: out.exitCode, timedOut: out.timedOut, stdoutTail: out.stdoutTail, stderrTail: out.stderrTail, ...(out.spawnError === undefined ? {} : { error: `could not start \`${out.commandLine}\`: ${out.spawnError}` }) },
       { kind: "command", exitCode: out.exitCode, timedOut: out.timedOut, stdout: out.stdout, stderr: out.stderr },
