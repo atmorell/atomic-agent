@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installCoreBackend } from "./core-backend.js";
-import { readCoreBackend } from "./core-state.js";
+import { coreVersionDir, readCoreBackend, writeCoreJson } from "./core-state.js";
 import { setConfiguredBackendVariant, setConfiguredCoreBackendVariant } from "../backend/windows-backend-variant.js";
 import { parseUserConfigFile } from "../../config/config-schema.js";
 
@@ -70,6 +70,19 @@ it("auto installs Core's recommendation", async () => {
   await installCoreBackend(dir);
   expect(installBody()).toMatchObject({ version: "b2", backend: "windows-x64-cuda-13.3" });
   expect(readCoreBackend(dir)?.backend).toBe("windows-x64-cuda-13.3");
+});
+
+it("reinstalling the same build keeps its GPU stamp; the CPU build starts without one", async () => {
+  // The desktop runs `models update` at every launch with idle models.
+  await installCoreBackend(dir);
+  const first = readCoreBackend(dir)!;
+  writeCoreJson(join(coreVersionDir(dir, first.coreVersion), "backend.json"), { ...first, servedAt: "2026-11-16T19:11:45.997Z" });
+  await installCoreBackend(dir);
+  expect(readCoreBackend(dir)?.servedAt).toBe("2026-11-16T19:11:45.997Z");
+  setConfiguredCoreBackendVariant("cpu");
+  await installCoreBackend(dir);
+  expect(readCoreBackend(dir)).toMatchObject({ backend: "windows-x64-cpu" });
+  expect(readCoreBackend(dir)?.servedAt).toBeUndefined();
 });
 
 it("a migrated file with the llama-server rescue's backendVariant cpu still installs the recommended GPU build", async () => {

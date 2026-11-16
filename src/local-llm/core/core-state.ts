@@ -26,8 +26,8 @@ export interface CoreBackend {
   installedAt: string;
   /**
    * When this install first served a chat model with layers offloaded to
-   * the GPU (`noteCoreBackendServed`). A new install writes a record
-   * without it.
+   * the GPU (`noteCoreBackendServed`). Reinstalling the same build keeps
+   * it; installing another build writes a record without it.
    */
   servedAt?: string;
 }

@@ -116,7 +116,16 @@ export async function installCoreBackend(dataDir: string, opts: DownloadFileOpti
     const binaryName = process.platform === "win32" ? "llama-server.exe" : "llama-server";
     const binary = [join(installed.path, "build", "bin", binaryName), join(installed.path, "bin", binaryName), join(installed.path, binaryName)].find(existsSync);
     if (!binary) throw new Error("Atomic Core installed a backend without an executable.");
-    const record: CoreBackend = { coreVersion: version, provider: "llamacpp", version: tag, backend, binary, installedAt: new Date().toISOString() };
+    // Reinstalling the same build keeps its GPU stamp: the desktop runs
+    // `models update` at every launch with idle models, which wiped it
+    // (16-11-2026), so the CPU rescue could swap a proven build on the first
+    // load after a launch. Another build (the CPU swap) starts unstamped.
+    const prior = readCoreBackend(dataDir, version);
+    const sameBuild = prior?.version === tag && prior.backend === backend && prior.binary === binary;
+    const record: CoreBackend = {
+      coreVersion: version, provider: "llamacpp", version: tag, backend, binary, installedAt: new Date().toISOString(),
+      ...(sameBuild && prior.servedAt ? { servedAt: prior.servedAt } : {}),
+    };
     opts.signal?.throwIfAborted();
     writeCoreJson(join(coreVersionDir(dataDir, version), "backend.json"), record);
     // A model may have started on the active Core during the install.
