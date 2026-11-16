@@ -93,7 +93,7 @@ export const FUSION_GUIDANCE = [
   // its longest task. Paid for by trimming the two lines after it.
   "Plan in the open, then delegate in the same turn — never stop at the plan: list the independent parts, a big one per worker, small ones shared; the longest sets the pace: split an outsized one along a `contract`.",
   "One task per part, in one `fusion.delegate` call; its `files` name the paths it will produce (approved once, so workers can write). Each `instructions` must stand alone: workers see the operator's request, not this chat, and cannot ask.",
-  "You choose `maxWorkers` per call; prefer sending more parts over doing any yourself.",
+  "You choose `maxWorkers` per call; delegate rather than do any part yourself.",
   "Tools that change things are refused for you — by design, not a fault.",
   "Keep the design and the judgement: read every reply against its brief.",
   VERIFY_LINE,
@@ -136,8 +136,12 @@ export function formatFusionMachineLine(
   const lines: string[] = [];
   if (workerSlots !== null) {
     const slots = `${workerSlots} request slot${workerSlots === 1 ? "" : "s"}`;
+    const tasks = `${workerSlots} balanced task${workerSlots === 1 ? "" : "s"}`;
+    // k8f (16-11-2026): five tasks on two slots; the three queued ones
+    // each paid their own reading and self-test, and the fan-out ran
+    // ~140 s past what two balanced tasks take (Fable, same day).
     lines.push(
-      `This machine: workers run${on} on a local llama-server with ${slots}, so up to ${workerSlots} run at once and any beyond that queue behind them.`,
+      `This machine: workers run${on} on a local llama-server with ${slots}, so up to ${workerSlots} run at once. Send at most ${tasks} — extras queue and each pays its own reading and self-test; a fan-out lasts ~sum(etaSeconds)/${workerSlots}.`,
     );
   } else {
     lines.push(`This machine: workers run${on} on a local llama-server.`);
@@ -151,14 +155,16 @@ export function formatFusionMachineLine(
     workerSlots === null
       ? "the fan-out narrow"
       : `\`maxWorkers\` at most ${workerSlots}`;
-  // Measured at daemon start; the number that turns "N times slower"
-  // into minutes per file for the model choosing a width.
+  // Measured at daemon start; the number that turns a brief's size
+  // into minutes for the model choosing a width. "N at once run N
+  // times slower" is gone: k8f measured ~43 tok/s per stream at two
+  // against ~45 single, and the false claim was all the line said.
   const speed =
     tokensPerSecond === null
       ? ""
       : ` This server generates ~${tokensPerSecond} tok/s single stream.`;
   lines.push(
-    `Local workers share one GPU: N at once run about N times slower each and can hit timeouts, so keep briefs short and ${width}.${speed}`,
+    `Local workers share one GPU, so keep briefs short and ${width}.${speed}`,
   );
   // The estimate has a basis on this machine or it has none. Asking
   // for `etaSeconds` without saying what to compute it from produced
@@ -169,7 +175,7 @@ export function formatFusionMachineLine(
   // tersely rather than explained.
   if (tokensPerSecond !== null) {
     lines.push(
-      `Set \`etaSeconds\`: tokens out / ${tokensPerSecond} tok/s × parallel workers + queue.`,
+      `Set \`etaSeconds\`: tokens out / ${tokensPerSecond} tok/s + queue.`,
     );
   }
   return lines.join("\n");

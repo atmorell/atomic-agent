@@ -155,8 +155,8 @@ describe("the ### fusion prefix section", () => {
 
 describe("the machine facts in the ### fusion block", () => {
   it("states the measured single-stream speed of a local server when known", () => {
-    // The number that turns "N times slower" into minutes per file for
-    // the model choosing a width. Absent, nothing about speed is said.
+    // The number that turns a brief's size into minutes for the model
+    // choosing a width. Absent, nothing about speed is said.
     const withSpeed = buildFusionGuidance({ ...FACTS, tokensPerSecond: 6.4 });
     expect(withSpeed).toContain("~6.4 tok/s single stream");
     expect(buildFusionGuidance(FACTS)).not.toContain("tok/s");
@@ -176,6 +176,10 @@ describe("the machine facts in the ### fusion block", () => {
     expect(prefix).toContain("4 request slots");
     expect(prefix).toContain("`qwen3-4b`");
     expect(prefix).toContain("up to 4 run at once");
+    // k8f: tasks beyond the slots queue and each pays its own reading
+    // and self-test, so the cap is on tasks, not only on workers.
+    expect(prefix).toContain("Send at most 4 balanced tasks");
+    expect(prefix).toContain("~sum(etaSeconds)/4");
     expect(prefix).toContain("`maxWorkers` at most 4");
   });
 
@@ -185,9 +189,10 @@ describe("the machine facts in the ### fusion block", () => {
     expect(block).toContain("one shared context");
     expect(block).toMatch(/overflow it together all fail/);
     expect(block).toContain("share one GPU");
-    expect(block).toMatch(/N times slower/);
-    expect(block).toContain("timeouts");
     expect(block).toContain("keep briefs short");
+    // k8f: two streams ran ~43 tok/s each against ~45 single, so the
+    // old "N times slower" claim was false on the server it described.
+    expect(block).not.toMatch(/N times slower/);
   });
 
   it("says nothing about a fact it does not have", () => {
@@ -215,6 +220,9 @@ describe("the machine facts in the ### fusion block", () => {
     expect(
       buildFusionGuidance(facts({ workerLeg: "local", workerSlots: 1 })),
     ).toContain("1 request slot,");
+    expect(
+      buildFusionGuidance(facts({ workerLeg: "local", workerSlots: 1 })),
+    ).toContain("Send at most 1 balanced task —");
   });
 
   it("tells a cloud leg it has no slot limit but pays per step", () => {
@@ -243,8 +251,11 @@ describe("the machine facts in the ### fusion block", () => {
   it("pushes the orchestrator to delegate, honestly", () => {
     // "It should always try to involve them more often" — but never at
     // the price of sending work that cannot succeed without the
-    // conversation the worker will not have.
-    expect(FUSION_GUIDANCE).toMatch(/prefer sending more/i);
+    // conversation the worker will not have. k8f: "prefer sending more
+    // parts" read as more tasks — five on two slots — so the push is
+    // now to delegate, and the machine line caps the count.
+    expect(FUSION_GUIDANCE).toMatch(/delegate rather than do any part yourself/);
+    expect(FUSION_GUIDANCE).not.toMatch(/prefer sending more/i);
     expect(FUSION_GUIDANCE).toContain("independent parts");
     // And to check a fan-out before accepting it, with the tools that can.
     expect(FUSION_GUIDANCE).toContain("`verify.syntax` on the declared files");
