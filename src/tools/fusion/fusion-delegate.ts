@@ -83,6 +83,8 @@ import {
   type JudgeSession,
   type JudgeVerdict,
 } from "./judge.js";
+import { unchangedAcrossAttempts } from "./declared-files.js";
+import { reviewedNote } from "./reviewed-note.js";
 import type { DelegateTask } from "./delegate-args.js";
 import { resolveTaskLegs, unknownModels, type TaskLeg } from "./role-models.js";
 import type { DelegateContract } from "./contract.js";
@@ -1524,9 +1526,10 @@ export function buildFusionDelegateTool(
               true,
             ),
           );
-          const merged = results.map(
-            (r) => retried.find((x) => x.id === r.id) ?? r,
-          );
+          const merged = results.map((r) => {
+            const again = retried.find((x) => x.id === r.id);
+            return again === undefined ? r : unchangedAcrossAttempts(again, r);
+          });
           const evaluated = await evaluateContract(
             merged.filter((r) => retryIds.has(r.id)),
             merged,
@@ -1762,11 +1765,27 @@ export function buildFusionDelegateTool(
       // First, so no cap on the table below can clip the verdict.
       const autoverifyBlock =
         autoverify === undefined ? "" : `${renderAutoVerifyBlock(autoverify)}\n\n`;
+      // Right after the verdict it rests on: the judge and the verify
+      // have reviewed the work, so the orchestrator need not again.
+      const reviewed = reviewedNote({
+        results,
+        autoverify,
+        unsettled:
+          ctx.signal.aborted ||
+          budgetStopped !== undefined ||
+          trips.length > 0 ||
+          (replan !== undefined &&
+            (replan.pending.length > 0 || replan.exhausted.length > 0)) ||
+          (resume !== undefined &&
+            (resume.carried.length > 0 || resume.needsConfirmation.length > 0)) ||
+          merges.length > 0,
+      });
+      const verdictBlock = `${autoverifyBlock}${reviewed === undefined ? "" : `${reviewed}\n\n`}`;
       return compressToolResult(
         {
           tool: FUSION_DELEGATE_TOOL,
           status: outcome === "all_failed" ? "error" : "ok",
-          output: `${autoverifyBlock}${formatDelegateOutput(results, deps.outputCharCap, {
+          output: `${verdictBlock}${formatDelegateOutput(results, deps.outputCharCap, {
             ...(contractLine === undefined ? {} : { contractLine }),
             spend,
             ...(ordered ? { waves: plan.waves } : {}),
@@ -1827,10 +1846,11 @@ export function buildFusionDelegateTool(
                   },
                 }),
             ...(autoverify === undefined ? {} : { autoverify }),
+            ...(reviewed === undefined ? {} : { reviewed: true }),
           },
         },
         {
-          maxSummaryLength: deps.outputCharCap + 400 + autoverifyBlock.length,
+          maxSummaryLength: deps.outputCharCap + 400 + verdictBlock.length,
           maxTailLines: 2000,
         },
       );

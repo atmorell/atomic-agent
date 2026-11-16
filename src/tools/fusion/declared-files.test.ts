@@ -16,6 +16,7 @@ import {
   inspectDeclaredFiles,
   isPlaceholderReply,
   MTIME_SLACK_MS,
+  unchangedAcrossAttempts,
 } from "./declared-files.js";
 import type { WorkerTaskResult } from "./worker-result.js";
 
@@ -206,6 +207,37 @@ describe("applyNoChangesRule", () => {
       const original = row({ status });
       expect(applyNoChangesRule(original, untouched)).toBe(original);
     }
+  });
+});
+
+describe("unchangedAcrossAttempts", () => {
+  it("drops a retry's unchanged note for a file the first attempt wrote", () => {
+    // k3b-k3d: the first attempt wrote models.py, the judge's retry fixed
+    // only tests — "models.py unchanged by this task" sent the orchestrator
+    // to re-read a diff it did not need.
+    const first = row({ notes: ["judge: 1 of 4 acceptance items not met"] });
+    const retry = row({ notes: ["models.py unchanged by this task", "other note"] });
+    const merged = unchangedAcrossAttempts(retry, first);
+    expect(merged.notes).toEqual(["other note"]);
+    expect(merged.status).toBe("ok");
+  });
+
+  it("keeps only the paths neither attempt touched, and drops an emptied notes list", () => {
+    const first = row({ notes: ["spec.md, README.md unchanged by this task"] });
+    const retry = row({ notes: ["spec.md, models.py unchanged by this task"] });
+    expect(unchangedAcrossAttempts(retry, first).notes).toEqual([
+      "spec.md unchanged by this task",
+    ]);
+    const onlyWritten = row({ notes: ["models.py unchanged by this task"] });
+    expect(unchangedAcrossAttempts(onlyWritten, row())).not.toHaveProperty("notes");
+  });
+
+  it("returns the retry itself when its note is true for both attempts", () => {
+    const first = row({ notes: ["spec.md unchanged by this task"] });
+    const retry = row({ status: "failed", notes: ["spec.md unchanged by this task"] });
+    expect(unchangedAcrossAttempts(retry, first)).toBe(retry);
+    const plain = row();
+    expect(unchangedAcrossAttempts(plain, first)).toBe(plain);
   });
 });
 

@@ -252,7 +252,7 @@ export function applyDeclaredFileReport(
     }
   }
   if (report.unchanged.length > 0) {
-    notes.push(`${report.unchanged.join(", ")} unchanged by this task`);
+    notes.push(unchangedNote(report.unchanged));
   }
   if (emptied.length > 0) {
     notes.push(`${emptied.join(", ")} empty after this task`);
@@ -268,6 +268,54 @@ export function applyDeclaredFileReport(
     ...(error === undefined ? {} : { error }),
     ...(notes.length === 0 ? {} : { notes }),
   };
+}
+
+const UNCHANGED_SUFFIX = " unchanged by this task";
+
+function unchangedNote(paths: readonly string[]): string {
+  return `${paths.join(", ")}${UNCHANGED_SUFFIX}`;
+}
+
+/** The paths of an "X, Y unchanged by this task" note; undefined for any other note. */
+function unchangedPaths(note: string): string[] | undefined {
+  return note.endsWith(UNCHANGED_SUFFIX)
+    ? note.slice(0, -UNCHANGED_SUFFIX.length).split(", ")
+    : undefined;
+}
+
+/**
+ * A judge's retry runs the task again, and its file check measures from
+ * the retry's own start: a file the first attempt wrote and the retry
+ * left alone came back "unchanged by this task", beside a diffstat that
+ * showed it new (k3b-k3d, 16-11-2026). Over the whole task a path is
+ * unchanged only when neither attempt wrote it, so the retry's note keeps
+ * just the paths the first attempt's note named too, and goes when none
+ * is left. The status is the retry's own: "the retry changed nothing" is
+ * still true of the retry.
+ */
+export function unchangedAcrossAttempts(
+  retry: WorkerTaskResult,
+  first: WorkerTaskResult,
+): WorkerTaskResult {
+  if (retry.notes === undefined) return retry;
+  const firstUnchanged = new Set(
+    (first.notes ?? []).flatMap((note) => unchangedPaths(note) ?? []),
+  );
+  let trimmed = false;
+  const notes: string[] = [];
+  for (const note of retry.notes) {
+    const paths = unchangedPaths(note);
+    if (paths === undefined) {
+      notes.push(note);
+      continue;
+    }
+    const still = paths.filter((path) => firstUnchanged.has(path));
+    if (still.length < paths.length) trimmed = true;
+    if (still.length > 0) notes.push(unchangedNote(still));
+  }
+  if (!trimmed) return retry;
+  const { notes: _dropped, ...rest } = retry;
+  return notes.length === 0 ? rest : { ...rest, notes };
 }
 
 /**

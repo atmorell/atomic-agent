@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { compressToolResult } from "../../compressor/result-compressor.js";
+import { REVIEWED_NOTE } from "./reviewed-note.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FanoutScopeRegistry } from "../../approval/fanout-scope.js";
@@ -240,6 +242,10 @@ describe("the judge's prompt is built to be cached (k3c, 16-11-2026)", () => {
     expect(text).toContain("### other.py\nd = 4");
     expect(text.length).toBeLessThan(bigNow.length);
     expect(seen.get("big.py")).toBe(bigNow);
+    expect(await gatherJudgeEvidence([{ task, reply: "" }], undefined, dir, { before })).toHaveProperty(
+      "clipped",
+      false,
+    );
     expect(seen.get("new.py")).toBe("c = 3\n");
     rmSync(dir, { recursive: true, force: true });
   });
@@ -288,6 +294,40 @@ describe("the judge's prompt is built to be cached (k3c, 16-11-2026)", () => {
     expect(followUp).not.toContain("b.txt");
     expect(followUp).not.toContain(JUDGE_RULES);
     expect([...session.last!.asked]).toEqual(["t1", "t2"]);
+    expect(second.get("t1")).not.toHaveProperty("clipped");
+    expect(session.last!.clipped).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("marks a verdict on clipped evidence, and the follow-up round keeps the mark", async () => {
+    // The reviewed line (`reviewed-note.ts`) is only true of files the
+    // judge read whole; a round-2 ruling still rests on round 1's text.
+    const dir = mkdtempSync(join(tmpdir(), "judge-clip-"));
+    const big = `${"x = 1\n".repeat(5_000)}`;
+    expect(big.length).toBeGreaterThan(JUDGE_EVIDENCE_CHARS);
+    writeFileSync(join(dir, "big.py"), big);
+    const task: DelegateTask = { id: "t", title: "T", instructions: "write big.py", files: ["big.py"] };
+    const answers = ['{"red":[{"id":"a2","why":"wrong"}],"pass":[]}', '{"red":[],"pass":["a2"]}'];
+    let n = 0;
+    const session: JudgeSession = { key: "judge-clip" };
+    const call = {
+      facts: { checkOutcomes: [], findings: [] },
+      contract: undefined,
+      workingDir: dir,
+      target: TARGET,
+      pricing: undefined,
+      complete: (async () => ({ content: answers[n++]! })) as EscalationComplete,
+      signal: new AbortController().signal,
+      before: new Map<string, string | null>([["big.py", null]]),
+      session,
+      entries: [{ task, items: buildAcceptanceChecklist(task, undefined), reply: "" }],
+    };
+    const evidence = await gatherJudgeEvidence(call.entries, undefined, dir, { before: call.before });
+    expect(evidence.clipped).toBe(true);
+    expect((await judgeTasks(call)).get("t")).toMatchObject({ green: false, clipped: true });
+    writeFileSync(join(dir, "big.py"), big.replace("x = 1\n", "x = 2\n"));
+    const second = (await judgeTasks(call)).get("t")!;
+    expect(second).toMatchObject({ green: true, clipped: true });
     rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -661,6 +701,77 @@ describe("a node closes only on a green list (ATO-944)", () => {
     expect(row.status).toBe("ok");
     expect(row.notes?.join(" ")).toContain("judge: all 2 acceptance items green after one retry");
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("does not call a file the first attempt wrote unchanged because the retry left it (k3d, 16-11-2026)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-keep-"));
+    let judged = 0;
+    const d = deps(
+      dir,
+      async () => {
+        judged += 1;
+        return { content: JSON.stringify({ items: [{ id: "a3", pass: judged > 1, why: "tests" }] }) };
+      },
+      {
+        runTurn: async (_s: unknown, message: string) => {
+          d.briefs.push(message);
+          if (d.briefs.length === 1) writeFileSync(join(dir, "models.py"), "x = 1\n");
+          // The retry starts well after the first attempt wrote models.py.
+          else utimesSync(join(dir, "models.py"), new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+          writeFileSync(join(dir, "test_models.py"), `# attempt ${d.briefs.length}\n`);
+          return {
+            session: createEmptySessionState({ id: "s-w", workingDir: dir }),
+            reason: "reply",
+            stepCount: 1,
+          } as RunTurnResult;
+        },
+      } as Partial<FusionDelegateDeps>,
+    );
+    const result = await buildFusionDelegateTool(d).run(
+      { tasks: [{ id: "t", title: "T", instructions: "models and tests", files: ["models.py", "test_models.py"] }] },
+      { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+    );
+    expect(d.briefs).toHaveLength(2);
+    const row = (result.details.tasks as Array<{ status: string; notes?: string[] }>)[0]!;
+    expect(row.status).toBe("ok");
+    expect(row.notes?.join(" ")).not.toContain("unchanged by this task");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("says the review is done when the judge is green and the verify passed, and only then (k3d)", async () => {
+    const run = async (green: boolean) => {
+      const dir = mkdtempSync(join(tmpdir(), "judge-rev-"));
+      const d = deps(
+        dir,
+        async () => ({ content: JSON.stringify({ items: [{ id: "a2", pass: green, why: "score" }] }) }),
+        {
+          resolveRunMode: () => mode({ autoVerify: { maxRounds: 0 } }),
+          dispatchVerify: async () =>
+            compressToolResult({
+              tool: "verify.run",
+              status: "ok",
+              output: "verify.run command: ok",
+              details: { ok: true, kind: "command", exitCode: 0, stdoutTail: "1 passed", stderrTail: "", description: "python -m pytest -q", checks: [], isolated: true, durationMs: 5 },
+            }),
+        },
+      );
+      const result = await buildFusionDelegateTool(d).run(
+        { tasks: TASK, verify: { kind: "command", cmd: "python", args: ["-m", "pytest", "-q"], checks: ["exit 0"] } },
+        { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+      );
+      rmSync(dir, { recursive: true, force: true });
+      return result;
+    };
+    const green = await run(true);
+    // Right under the verify's verdict and diffstat, above the rows.
+    const lines = green.summary.split("\n");
+    expect(lines[0]).toMatch(/^autoverify: PASS/);
+    expect(lines[1]).toMatch(/^diffstat: /);
+    expect(lines[2]).toBe(REVIEWED_NOTE);
+    expect(green.details.reviewed).toBe(true);
+    const red = await run(false);
+    expect(red.summary).not.toContain("reviewed:");
+    expect(red.details).not.toHaveProperty("reviewed");
   });
 
   it("hands the judge each attempt's runtime record: the retry's run, both attempts' writes", async () => {

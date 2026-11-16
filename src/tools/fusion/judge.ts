@@ -271,6 +271,11 @@ export interface JudgeVerdict {
   items: ItemVerdict[];
   /** Why no verdict could be reached, when none was; never green then. */
   unverified?: string;
+  /**
+   * The judge ruled on evidence cut to its budget (`gatherJudgeEvidence`):
+   * part of a file it was asked about went unread.
+   */
+  clipped?: true;
   costUsd: number | null;
 }
 
@@ -391,6 +396,8 @@ export interface JudgeEvidence {
   text: string;
   /** Each file's text as read now, keyed like `snapshotFiles` (`null`: missing). */
   seen: FileSnapshot;
+  /** A block was cut to its share of the budget. */
+  clipped: boolean;
 }
 
 /**
@@ -455,19 +462,18 @@ export async function gatherJudgeEvidence(
     blocks.map((b) => b.body?.length ?? 0),
     budget,
   );
+  let clipped = false;
   const text = blocks
     .map((block, i) => {
       if (block.bare === true) return block.head;
       if (block.body === undefined) return `${block.head}\n[missing]`;
       const cap = caps[i]!;
-      const shown =
-        block.body.length > cap
-          ? `${block.body.slice(0, cap)}\n[… ${block.body.length - cap} more chars clipped]`
-          : block.body;
-      return `${block.head}\n${shown}`;
+      if (block.body.length <= cap) return `${block.head}\n${block.body}`;
+      clipped = true;
+      return `${block.head}\n${block.body.slice(0, cap)}\n[… ${block.body.length - cap} more chars clipped]`;
     })
     .join("\n\n");
-  return { text, seen };
+  return { text, seen, clipped };
 }
 
 interface EvidenceBlock {
@@ -898,6 +904,8 @@ export interface JudgeRound {
   /** The files as the judge has read them, by `snapshotFiles` key. */
   seen: FileSnapshot;
   qualified: boolean;
+  /** Some round's evidence was clipped; the session still holds it. */
+  clipped: boolean;
   /** The tasks the judge has ruled on. */
   asked: ReadonlySet<string>;
   verdicts: ReadonlyMap<string, JudgeVerdict>;
@@ -979,6 +987,9 @@ export async function judgeTasks(
       ...(last === undefined ? {} : { read: last.seen }),
     },
   );
+  // A follow-up round reads the earlier rounds' evidence from the session,
+  // clipped as it was then.
+  const clipped = evidence.clipped || last?.clipped === true;
   const tasks = asked.map(({ entry, facts }): JudgePromptTask => ({
     task: entry.task,
     items: entry.items,
@@ -1043,7 +1054,12 @@ export async function judgeTasks(
         : { id: item.id, ...verdict, by: "judge" };
     });
     const all = [...facts, ...judged].sort((a, b) => itemOrder(a.id) - itemOrder(b.id));
-    settled.set(entry.task.id, { green: all.every((v) => v.pass), items: all, costUsd: share });
+    settled.set(entry.task.id, {
+      green: all.every((v) => v.pass),
+      items: all,
+      ...(clipped ? { clipped: true as const } : {}),
+      costUsd: share,
+    });
   }
   if (input.session !== undefined && ruled !== null) {
     const seen: FileSnapshot = new Map(last?.seen ?? []);
@@ -1054,6 +1070,7 @@ export async function judgeTasks(
       prompt,
       seen,
       qualified,
+      clipped,
       asked: new Set([...(last?.asked ?? []), ...asked.map((a) => a.entry.task.id)]),
       verdicts,
     };
@@ -1091,6 +1108,7 @@ export interface JudgeSummary {
   failed: number;
   retried: boolean;
   unverified?: string;
+  clipped?: true;
   costUsd: number | null;
   items: ItemVerdict[];
 }
@@ -1103,6 +1121,7 @@ export function judgeSummary(verdict: JudgeVerdict, retried: boolean): JudgeSumm
     failed: redItems(verdict).length,
     retried,
     ...(verdict.unverified === undefined ? {} : { unverified: verdict.unverified }),
+    ...(verdict.clipped === true ? { clipped: true as const } : {}),
     costUsd: verdict.costUsd,
     items: verdict.items,
   };
