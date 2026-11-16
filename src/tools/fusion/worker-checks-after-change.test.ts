@@ -25,7 +25,6 @@ import {
   failingCheckLine,
   formatCheckIdleSteer,
   formatCheckResultSteer,
-  formatStandingCheckFailures,
 } from "./worker-prompt.js";
 
 /**
@@ -44,8 +43,6 @@ type TurnOptions = Parameters<WorkerRunnerDeps["runTurn"]>[2];
 interface Step {
   writes?: string[];
   refused?: string[];
-  /** The agent loop's own loop detector fires in this step. */
-  loop?: boolean;
 }
 
 function refusedEdit(path: string): never {
@@ -82,12 +79,7 @@ function executed(tool: string, path: string, n: number): never {
  * A worker turn that behaves like `AgentLoop` at its step boundaries:
  * awaits `beforeStep`, then drains the inbox into that step.
  */
-function harness(
-  dir: string,
-  script: Step[],
-  runChecks?: ContractCheckRunner,
-  extra: Partial<WorkerRunnerDeps> = {},
-) {
+function harness(dir: string, script: Step[], runChecks?: ContractCheckRunner) {
   const inbox = new SteeringInbox();
   const briefs: string[] = [];
   /** What each step read from the inbox, by step index. */
@@ -114,16 +106,6 @@ function harness(
         for (const file of script[i]!.refused ?? []) {
           options.eventHook?.(refusedEdit(join(dir, file)));
         }
-        if (script[i]!.loop === true) {
-          options.eventHook?.({
-            type: "loop_detected",
-            tool: "os.shell.run",
-            count: 3,
-            stepIndex: i,
-            level: "warn",
-            detector: "outcome_repeat",
-          } as never);
-        }
         options.eventHook?.({ type: "step_finished", stepIndex: i } as never);
       }
       return {
@@ -144,7 +126,6 @@ function harness(
     workingDir: dir,
     steerWorker: (sessionId, text) => inbox.push(sessionId, text),
     ...(runChecks === undefined ? {} : { runChecks }),
-    ...extra,
   };
   return { deps, briefs, readAt, holds };
 }
@@ -166,11 +147,7 @@ const CHECKS: DelegateContract["checks"] = [
   { task: "other", kind: "command", cmd: "node", args: ["--check", "other.js"] },
 ];
 
-function run(
-  deps: WorkerRunnerDeps,
-  files: string[] = ["core.py", "cli.py"],
-  escalation?: Parameters<typeof runWorkerTasks>[1]["escalation"],
-) {
+function run(deps: WorkerRunnerDeps, files: string[] = ["core.py", "cli.py"]) {
   const task: DelegateTask = { id: "core", title: "Core", instructions: "write core", files };
   return runWorkerTasks(deps, {
     parentSessionId: "s-parent",
@@ -182,7 +159,6 @@ function run(
     tasks: [task],
     contract: { checks: CHECKS },
     signal: new AbortController().signal,
-    ...(escalation === undefined ? {} : { escalation }),
   });
 }
 
@@ -501,37 +477,6 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     await run(unwired.deps);
     expect(unwired.briefs[0]).not.toContain(CHECKS_RUN_BY_RUNTIME_RULE);
   });
-
-  // k8an: the advisor saw only the worker's passing runs and answered "No
-  // defect is visible" while the task's check failed on the worker's test.
-  const STANDING = "## The task's checks, run by the runtime: still failing";
-  const advised = (verdict: Array<{ ok: boolean; error?: string }>) => {
-    const prompts: string[] = [];
-    const h = harness(dir, [{ writes: ["core.py", "cli.py"] }, { loop: true }, {}], fakeRunner([verdict]).runner, {
-      escalationComplete: async ({ prompt }) => {
-        prompts.push(prompt);
-        return { content: "core.py:3: fix the assert", usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } };
-      },
-    });
-    const target = { providerId: "cloud", model: "big", auto: true, replace: false, maxUsd: 0.25 };
-    return { prompts, done: run(h.deps, undefined, { target, pricing: { input: 1, output: 4 } }) };
-  };
-
-  it("hands the advisor the checks that still fail on the runtime's last run", async () => {
-    const { prompts, done } = advised([{ ok: false, error: "AssertionError: assert 'Z' == 'a'" }, { ok: true }]);
-    await done;
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain(STANDING);
-    expect(prompts[0]).toContain("1 of 2 failed on the runtime's last run of them:");
-    expect(prompts[0]).toContain("- `python -c import core; assert core.parse('a') == 1`: AssertionError: assert 'Z' == 'a'");
-  });
-
-  it("hands the advisor no checks when the last run passed", async () => {
-    const { prompts, done } = advised([{ ok: true }, { ok: true }]);
-    await done;
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).not.toContain(STANDING);
-  });
 });
 
 describe("formatCheckIdleSteer", () => {
@@ -663,30 +608,5 @@ describe("failingCheckLine", () => {
       [{ ok: false, detail }],
     );
     expect(text).toContain("\n  failing check line 4: `assert b.vaerdi('A1') == 5, b.vaerdi('A1')`");
-  });
-});
-
-describe("formatStandingCheckFailures", () => {
-  const checks = [1, 2, 3, 4, 5].map((n) => ({ task: "core", kind: "command", cmd: "python", args: [`t${n}.py`] }));
-
-  it("is nothing when every check passed", () => {
-    expect(formatStandingCheckFailures(checks, checks.map(() => ({ ok: true, detail: "passed" })))).toBeUndefined();
-  });
-
-  it("lists the first three failures with the check's own failing line, and counts the rest", () => {
-    const script = "import core\nassert core.parse('a') == 1";
-    const detail = 'Traceback (most recent call last): File "<string>", line 2, in <module> AssertionError';
-    const text = formatStandingCheckFailures(
-      [{ task: "core", kind: "command", cmd: "python", args: ["-c", script] }, ...checks],
-      [{ ok: false, detail }, { ok: true, detail: "passed" }, ...checks.slice(1).map(() => ({ ok: false, detail: "exit 1" }))],
-    );
-    expect(text?.split("\n")[0]).toBe("5 of 6 failed on the runtime's last run of them:");
-    expect(text).toContain("\n  failing check line 2: `assert core.parse('a') == 1`");
-    expect(text).toContain("- `python t2.py`: exit 1");
-    expect(text).not.toContain("t1.py");
-    expect(text).not.toContain("t4.py");
-    expect(text).toContain("- +2 more failing");
-    // A list for the advisor, not a steer: no instruction to the worker.
-    expect(text).not.toContain("os.fs.edit");
   });
 });

@@ -65,26 +65,18 @@ export type EscalationComplete = (input: {
  * files, and the rewrite brought a new bug. `evidence` is the worker's
  * own failing run and reads (`WorkerRunCollector.evidence()` in
  * worker-result.ts).
- *
- * `checks` is the runtime's last run of the task's own checks when it
- * failed (`formatStandingCheckFailures`). k8an (16-11-2026): without it
- * the advisor saw only the worker's passing runs and answered "No defect
- * is visible in the evidence" while the check kept failing on an assert
- * in the worker's own test, 19 steps without a write.
  */
 export function renderAdvisorPrompt(input: {
   brief: string;
   trigger: EscalationTrigger;
   findings: string;
   evidence?: string;
-  checks?: string;
 }): string {
   const brief =
     input.brief.length > ADVISOR_BRIEF_CHARS
       ? `${input.brief.slice(0, ADVISOR_BRIEF_CHARS)}\n[… brief truncated]`
       : input.brief;
   const evidence = input.evidence?.trim() ?? "";
-  const checks = input.checks?.trim() ?? "";
   return [
     "You are advising a smaller model that is working on one task and appears to be stuck.",
     "Read its brief, what it has done and the evidence below. If the evidence shows the defect, name it as file:line and give the exact old and new lines for one os.fs.edit. Never tell it to rewrite or re-create a file. If you cannot see the defect, name the one command that would show it, such as a short script on stdin that imports the module and calls it. Then say what to stop doing. Under 300 words, no preamble.",
@@ -105,14 +97,6 @@ export function renderAdvisorPrompt(input: {
     "## What it has done so far",
     input.findings,
     "",
-    ...(checks.length > 0
-      ? [
-          "## The task's checks, run by the runtime: still failing",
-          "These decide the task. Where they fail and its own runs pass, the defect is in what the failing check runs, which can be a test file the worker wrote itself.",
-          checks,
-          "",
-        ]
-      : []),
     "## Evidence: its own runs and reads",
     evidence.length > 0 ? evidence : "(none recorded: it has not run anything or re-read a file it wrote)",
   ].join("\n");

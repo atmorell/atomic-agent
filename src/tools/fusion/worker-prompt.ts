@@ -405,43 +405,6 @@ export function failingCheckLine(
   };
 }
 
-/** One failing check as a bullet: its spec, its output, the check's own line that raised. */
-export function describeFailedCheck(
-  check: Readonly<Record<string, unknown>>,
-  detail: string,
-): string {
-  const failing = failingCheckLine(check, detail);
-  const quoted =
-    failing === undefined ? "" : `\n  failing check line ${failing.line}: \`${failing.source}\``;
-  return `- \`${describeCheckSpec(check)}\`: ${detail}${quoted}`;
-}
-
-/**
- * The failures of the runtime's last run of a worker's own checks, for
- * the advisor (k8an, 16-11-2026): it saw only the worker's own runs,
- * which passed, and answered "No defect is visible in the evidence"
- * while the task's check kept failing on an assert in the worker's own
- * test. `undefined` when nothing failed.
- */
-export function formatStandingCheckFailures(
-  checks: readonly Readonly<Record<string, unknown>>[],
-  outcomes: readonly { ok: boolean; detail: string }[],
-): string | undefined {
-  const failed = outcomes
-    .map((outcome, i) => ({ outcome, check: checks[i] ?? {} }))
-    .filter(({ outcome }) => !outcome.ok);
-  if (failed.length === 0) return undefined;
-  const shown = failed
-    .slice(0, CHECK_STEER_MAX_FAILURES)
-    .map(({ outcome, check }) => describeFailedCheck(check, outcome.detail));
-  const more = failed.length - shown.length;
-  return [
-    `${failed.length} of ${outcomes.length} failed on the runtime's last run of them:`,
-    ...shown,
-    ...(more > 0 ? [`- +${more} more failing`] : []),
-  ].join("\n");
-}
-
 /**
  * The steer carrying the runtime's run of a worker's own checks after a
  * change: the first failures with their output, or that all passed.
@@ -461,7 +424,12 @@ export function formatCheckResultSteer(
   if (failed.length === 0) {
     return `The runtime ran your task's ${total} check${total === 1 ? "" : "s"} after your last change: all passed. Your task is done: reply now, naming the files you wrote.`;
   }
-  const line = ({ outcome, check }: (typeof failed)[number]) => describeFailedCheck(check, outcome.detail);
+  const line = ({ outcome, check }: (typeof failed)[number]) => {
+    const failing = failingCheckLine(check, outcome.detail);
+    const quoted =
+      failing === undefined ? "" : `\n  failing check line ${failing.line}: \`${failing.source}\``;
+    return `- \`${describeCheckSpec(check)}\`: ${outcome.detail}${quoted}`;
+  };
   const open = failed.filter(({ state }) => state === undefined || state === "doubt");
   const stopped = failed.filter(({ state }) => state === "stop");
   const silent = failed.length - open.length - stopped.length;
