@@ -83,6 +83,29 @@ describe("compressToolResult", () => {
     expect(out.summary).toContain("AssertionError");
   });
 
+  it("names a Python traceback by its exception line, not its header (k8g)", () => {
+    const log = [
+      "$ python - < stdin (3420 bytes #b01eeb3a)",
+      "exit: 1",
+      "basic ok",
+      "Traceback (most recent call last):",
+      '  File "<stdin>", line 14, in <module>',
+      '  File "C:\\w\\ark\\formel.py", line 65, in tokenize',
+      "    raise ValueError(f'Syntaksfejl: manglende raekkenummer i \"{cell_str}\"')",
+      'ValueError: Syntaksfejl: manglende raekkenummer i "S"',
+    ].join("\n");
+    const out = compressToolResult({ tool: "os.shell.run", status: "error", output: log });
+    expect(out.summary.split("\n")[0]).toBe(
+      'key: ValueError: Syntaksfejl: manglende raekkenummer i "S"',
+    );
+  });
+
+  it("keeps the traceback header when no exception line closes it", () => {
+    const log = ["Traceback (most recent call last):", '  File "x.py", line 1', "  [cut]"].join("\n");
+    const out = compressToolResult({ tool: "os.shell.run", status: "error", output: log });
+    expect(out.summary.split("\n")[0]).toBe("key: Traceback (most recent call last):");
+  });
+
   it("head overflow (the default) still keeps the beginning", () => {
     const out = compressToolResult(
       { tool: "page", status: "ok", output: "A".repeat(300) + "Z".repeat(300) },

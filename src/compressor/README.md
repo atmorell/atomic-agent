@@ -3,7 +3,7 @@
 Status: current
 Owner: src/compressor/
 
-Bounds local tool observations. Tail versus head preservation is intentional, especially for shell check verdicts; compression and transcript rendering are distinct local caps.
+Bounds local tool observations. Tail versus head preservation is intentional, especially for shell check verdicts; compression and transcript rendering are distinct local caps. An error result leads with a `key:` line, the first line that looks like an error; for a Python traceback that is the exception line below the frames, not the header.
 
 The compressor also retains the exact obtained output in non-enumerable, transient fields. The tool registry promotes that output into the result summary in `cloud` mode before transcript persistence; cloud batch commit skips the shared summary cap. Local serialization and summaries keep their existing shape; in local mode the registry may save the full output of a clipped result to a session file and put its path in the summary ([tool-output-spill.ts](../tools/tool-output-spill.ts)). Wrappers that add warnings use `retainToolOutput` so the complete output carries the same warnings. Explicit retrieval ranges and tool resource limits remain source boundaries; the context layer does not clip the returned text again. [Cloud seam tests](../agent/cloud-context-seam.test.ts) cover full results, warnings and cancellation.
 

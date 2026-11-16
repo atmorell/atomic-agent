@@ -154,15 +154,39 @@ const ERROR_MARKERS = [
   /exception:/i,
 ];
 
+const TRACEBACK_HEADER = /^\s*traceback \(most recent call last\):?\s*$/i;
+/** Python's closing line: unindented `Name: message` or a bare `Name`. */
+const PYTHON_EXCEPTION_LINE = /^[A-Za-z_][\w.]*(?::.*)?$/;
+
 function extractSignature(text: string, status: "ok" | "error"): string {
   if (status === "ok") return "";
   const lines = text.split("\n");
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
     for (const pattern of ERROR_MARKERS) {
       if (pattern.test(line)) {
-        return `key: ${line.trim().slice(0, 180)}`;
+        const named = TRACEBACK_HEADER.test(line)
+          ? closingException(lines, index + 1)
+          : undefined;
+        return `key: ${(named ?? line).trim().slice(0, 180)}`;
       }
     }
   }
   return "";
+}
+
+/**
+ * The line that names a Python traceback's exception. k8g (16-11-2026):
+ * the worker's summary led with "Traceback (most recent call last):",
+ * which says nothing, while `ValueError: …` sat below the frames.
+ * Frames are indented; the exception line is not.
+ */
+function closingException(
+  lines: readonly string[],
+  from: number,
+): string | undefined {
+  for (const line of lines.slice(from)) {
+    if (line.trim() === "" || /^\s/.test(line)) continue;
+    return PYTHON_EXCEPTION_LINE.test(line.trimEnd()) ? line : undefined;
+  }
+  return undefined;
 }
