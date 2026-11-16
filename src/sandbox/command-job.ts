@@ -29,6 +29,11 @@ export interface CommandJobOptions {
    * built by `buildSubshellInvocation` / `buildDirectInvocation`.
    */
   windowsVerbatimArguments?: boolean;
+  /**
+   * Written to the child's input, which is then closed (`os.shell.run`'s
+   * `stdin`). Omitted or empty closes it at once.
+   */
+  stdin?: string;
 }
 
 export interface CommandJobExit {
@@ -132,8 +137,9 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
 
 /**
  * Spawn `command` in its own process group with both streams captured
- * into capped head + tail buffers. Nothing is written to stdin; it is
- * closed at once, so a command that reads it sees EOF.
+ * into capped head + tail buffers. `options.stdin`, when given, is
+ * written to stdin; either way stdin is then closed, so a command that
+ * reads it sees EOF.
  */
 export function startCommandJob(
   command: string,
@@ -187,9 +193,14 @@ export function startCommandJob(
 
   child.stdout.on("data", (chunk: Buffer) => stdout.append(chunk));
   child.stderr.on("data", (chunk: Buffer) => stderr.append(chunk));
-  // Nothing is written, so a far end that closed early is not an error.
+  // A far end that closed early (a command that never reads its input)
+  // is not an error, with or without `options.stdin`.
   child.stdin.on("error", () => undefined);
-  child.stdin.end();
+  if (options.stdin !== undefined && options.stdin.length > 0) {
+    child.stdin.end(options.stdin, "utf8");
+  } else {
+    child.stdin.end();
+  }
 
   return {
     command,

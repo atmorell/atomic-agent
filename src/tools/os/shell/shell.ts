@@ -23,7 +23,17 @@ import {
   shellCommandArgv,
   shellRuleSegments,
   shellRunsUnreadableScript,
+  stdinAsInlineScript,
+  stdinFeedsUnreadCommands,
 } from "./shell-command-argv.js";
+import {
+  formatStdinPreview,
+  parseShellStdin,
+  refuseShellStdin,
+  SHELL_STDIN_MAX_BYTES,
+  STDIN_WITH_SUBSHELL_MESSAGE,
+  stdinUnreadMessage,
+} from "./shell-stdin.js";
 import {
   checkBrowserBypassArgv,
   checkBrowserBypassLine,
@@ -164,6 +174,10 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
         },
       });
     }
+    // Text for the command's input (k8e, `shell-stdin.ts`): a worker
+    // drives its own code with `python -` instead of a test file.
+    const stdin = parseShellStdin(rawArgs.stdin);
+    if (stdin !== null && "error" in stdin) return refuseShellStdin(cmd, stdin.error);
     const cwd =
       typeof rawArgs.cwd === "string" && rawArgs.cwd.length > 0
         ? resolveUserPath(rawArgs.cwd, ctx.workingDir)
@@ -188,13 +202,27 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
       ? rawArgList
       : expandShellGlobArgs(cmd, rawArgList, cwd);
     const commandLine = [cmd, ...execArgs].join(" ");
+    if (stdin !== null && useShell) {
+      return refuseShellStdin(cmd, STDIN_WITH_SUBSHELL_MESSAGE);
+    }
+    if (stdin !== null && stdinFeedsUnreadCommands(cmd, execArgs)) {
+      return refuseShellStdin(cmd, stdinUnreadMessage(cmd));
+    }
+    // Every check reads a script on stdin as the same call with the code
+    // on the line (`python -` → `python -c <script>`); the spawn, the
+    // result and the prompt's command line keep the real argv. Data on
+    // stdin leaves the argv as it is.
+    const checkArgs =
+      (stdin === null ? null : stdinAsInlineScript(cmd, execArgs, stdin.text)) ??
+      execArgs;
+    const checkLine = [cmd, ...checkArgs].join(" ");
     const guardTokens = useShell
       ? commandLine.split(/\s+/).filter((t) => t.length > 0)
       : null;
     const guardInput =
       useShell && guardTokens && guardTokens.length > 0
         ? { cmd: guardTokens[0]!, rawArgs: guardTokens.slice(1), cwd }
-        : { cmd, rawArgs: execArgs, cwd };
+        : { cmd, rawArgs: checkArgs, cwd };
     const gogProbe = guardInput.cmd;
 
     // Driving a web browser from the shell (AppleScript, `open -a
@@ -204,7 +232,7 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
     const guardVerdict =
       (useShell
         ? checkBrowserBypassLine(commandLine, cwd)
-        : checkBrowserBypassArgv(cmd, execArgs, cwd)) ??
+        : checkBrowserBypassArgv(cmd, checkArgs, cwd)) ??
       checkShellCommandGuard(guardInput, options.shellPolicy);
     if (guardVerdict.action === "block") {
       return compressToolResult({
@@ -239,7 +267,7 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
     // passes as it is — there a `>` in an argument is only text.
     const targetPaths = useShell
       ? shellWriteTargets(subshellCommandLine, cwd)
-      : execWriteTargets(cmd, execArgs, cwd);
+      : execWriteTargets(cmd, checkArgs, cwd);
 
     // A fan-out the operator authorised may also run commands, but
     // only in the directory they saw: `cwd` inside the scope, and the
@@ -256,7 +284,7 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
     // not those, so it goes to the gate too, where a worker's refuse
     // policy hands it back as a step for the operator (ATO-1223).
     const dangerous = isDangerousGuardRule(guardVerdict.rule);
-    const commandSegments = shellRuleSegments(cmd, execArgs, useShell);
+    const commandSegments = shellRuleSegments(cmd, checkArgs, useShell);
     const commandUnreadable = shellRunsUnreadableScript(cmd, execArgs, useShell);
     const ruleCheck = {
       sessionId: ctx.sessionId,
@@ -306,9 +334,9 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
       // runs it unasked, and no prompt offers to remember it (ATO-1220).
       const commandShape = dangerous
         ? undefined
-        : shellGrantShape(guardInput.cmd, commandLine, useShell);
+        : shellGrantShape(guardInput.cmd, checkLine, useShell);
       // Saved approval rules match on argv and on the session's folder.
-      const commandArgv = shellCommandArgv(cmd, execArgs, useShell, commandShape);
+      const commandArgv = shellCommandArgv(cmd, checkArgs, useShell, commandShape);
       await requireApproval(
         options,
         {
@@ -327,7 +355,9 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
               : " (command reconstructed from args: the call had no cmd)"),
           // Quoted like the shell would need it, so the human approves
           // the argv that runs, not a re-joined look-alike (ATO-433).
-          preview: formatShellPreview(cmd, execArgs, useShell),
+          preview:
+            formatShellPreview(cmd, execArgs, useShell) +
+            (stdin === null ? "" : formatStdinPreview(stdin)),
           affectedResources: [cwd],
           ...(commandShape !== undefined ? { commandShape } : {}),
           ...(commandArgv !== undefined ? { commandArgv } : {}),
@@ -352,9 +382,10 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
       // having done nothing, and nothing in its output says so (F40).
       // The subshell path is excluded: there the arguments live inside
       // `cmd` itself.
-      noArguments: !useShell && execArgs.length === 0,
+      noArguments: !useShell && execArgs.length === 0 && stdin === null,
       gog: isGogCommand(gogProbe),
       guard: guardVerdict,
+      ...(stdin === null ? {} : { stdin: { bytes: stdin.bytes, digest: stdin.digest } }),
     };
     // Its own process group, so a stop reaches what the command
     // started too (`sleep 30 &` behind a subshell used to outlive the
@@ -372,6 +403,7 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
       ...(spawnSpec.windowsVerbatimArguments
         ? { windowsVerbatimArguments: true }
         : {}),
+      ...(stdin === null ? {} : { stdin: stdin.text }),
     });
     // `node --check a b c` exits 0 having read only `a`. Said first,
     // because nothing in node's own output says it — and a reply built
@@ -483,7 +515,9 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
   return {
     name: "os.shell.run",
     description:
-      "Run an OS command in the session working directory. Prefer the structured form `{cmd, args:[...]}` (argv globs `*`/`?` are expanded). Shell metacharacters (`|`, `&&`, `;`, `>`, `<`, `$`, backticks) are interpreted via the OS subshell (`sh -c` on macOS/Linux, `cmd.exe /c` on Windows) — a full command line passed as `cmd` (e.g. `\"ffprobe -v quiet … f.mp3\"` or `\"pip3 list | grep foo\"`) runs as written. Do not use for deleting user files — use `os.fs.trash` unless the user explicitly requests permanent shell deletion. Not for controlling web browsers (`osascript` scripts that read or set tabs and URLs, `open -a <browser> <url>`): those are refused; use the browser tools. Runs through a pre-exec guard: safe commands run directly, risky commands require approval, catastrophic commands are blocked without execution. Run the steps of a task yourself (installs such as `brew install`, `npm i -g`, `pip install`, `git clone`, builds, `make`, `docker run`) instead of printing them for the user to type: the approval prompt is how the user keeps control. The command has no terminal and no stdin; a command that stops at a sign-in, a password, sudo or a terminal question comes back with \"this step needs the user: …\" — hand over only that step. Pass `background: true` for a command that keeps running (a dev server, a watcher): it is started, watched for 3 s, and returned as a kept job. " +
+      "Run an OS command in the session working directory. Prefer the structured form `{cmd, args:[...]}` (argv globs `*`/`?` are expanded). Shell metacharacters (`|`, `&&`, `;`, `>`, `<`, `$`, backticks) are interpreted via the OS subshell (`sh -c` on macOS/Linux, `cmd.exe /c` on Windows) — a full command line passed as `cmd` (e.g. `\"ffprobe -v quiet … f.mp3\"` or `\"pip3 list | grep foo\"`) runs as written. Do not use for deleting user files — use `os.fs.trash` unless the user explicitly requests permanent shell deletion. Not for controlling web browsers (`osascript` scripts that read or set tabs and URLs, `open -a <browser> <url>`): those are refused; use the browser tools. Runs through a pre-exec guard: safe commands run directly, risky commands require approval, catastrophic commands are blocked without execution. Run the steps of a task yourself (installs such as `brew install`, `npm i -g`, `pip install`, `git clone`, builds, `make`, `docker run`) instead of printing them for the user to type: the approval prompt is how the user keeps control. The command has no terminal; its input is `stdin` when the call gives one (at most " +
+      `${SHELL_STDIN_MAX_BYTES}` +
+      " bytes, the structured form only — `{cmd: \"python\", args: [\"-\"], stdin: \"<script>\"}` runs a script without writing a file, checked as `python -c <script>`), else empty; a command that stops at a sign-in, a password, sudo or a terminal question comes back with \"this step needs the user: …\" — hand over only that step. Pass `background: true` for a command that keeps running (a dev server, a watcher): it is started, watched for 3 s, and returned as a kept job. " +
       describeShellTimeoutDefault(defaultTimeoutMs),
     readonly: false,
     async run(rawArgs, ctx) {

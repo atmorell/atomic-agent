@@ -222,11 +222,16 @@ export function readCommandRun(
   if (!("exitCode" in d) || d.jobId !== undefined) return undefined;
   const cmd = d.cmd;
   const spellings = [d.rawArgs, d.args].filter(Array.isArray) as unknown[][];
+  // A script on stdin is part of what ran (k8e): two `python -` runs with
+  // different scripts are different commands, and neither is the line
+  // autoverify would reuse as its own run.
+  const fed = typeof d.stdinDigest === "string" ? ` <stdin #${d.stdinDigest}>` : "";
   const lines = [
     ...new Set(
-      spellings.length === 0
+      (spellings.length === 0
         ? [commandLineOf(cmd, [])]
-        : spellings.map((args) => commandLineOf(cmd, args)),
+        : spellings.map((args) => commandLineOf(cmd, args))
+      ).map((line) => line + fed),
     ),
   ];
   // The full text when the result still carries it; a copy made on the

@@ -18,6 +18,7 @@ import {
   renderWorkerBrief,
   siblingFilesRule,
   START_LISTING_LIMIT,
+  STDIN_SELF_TEST_RULE,
 } from "./worker-prompt.js";
 import {
   FUSION_WORKER_APPROVAL_MARKER,
@@ -143,6 +144,17 @@ describe("renderWorkerBrief — siblings and browser code (ATO-919)", () => {
     expect(EDIT_NOT_REWRITE_RULE).toContain("`os.fs.edit`");
     expect(EDIT_NOT_REWRITE_RULE).toMatch(/never by writing it whole again/);
     expect(formatRewriteSteer("/w/a.py")).toContain("/w/a.py");
+  });
+
+  it("tells the worker to try its code on stdin, never in a scratch file (k8e)", () => {
+    // k8e: the core worker wrote a test file to drive its own code; the
+    // judge read it as a stray and the retry ran out the clock.
+    const brief = renderWorkerBrief(TASK, { workingDir: "/repo" });
+    const at = brief.indexOf(STDIN_SELF_TEST_RULE);
+    expect(at).toBeGreaterThan(brief.indexOf("RULES:"));
+    expect(at).toBeLessThan(brief.indexOf("- Finish with `reply`"));
+    expect(STDIN_SELF_TEST_RULE).toContain("`stdin`");
+    expect(STDIN_SELF_TEST_RULE).toMatch(/Never write a test or scratch file/);
   });
 });
 

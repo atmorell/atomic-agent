@@ -70,6 +70,8 @@ export interface ShellCommandFacts {
   /** `gog` output is kept far longer than any other command's. */
   gog: boolean;
   guard: GuardVerdict;
+  /** What the call's `stdin` carried (k8e): its size and digest, never the text. */
+  stdin?: { bytes: number; digest: string };
 }
 
 export interface ShellResultInput {
@@ -95,7 +97,11 @@ export interface ShellResultInput {
 
 export function renderShellResult(input: ShellResultInput): CompressedToolResult {
   const { facts } = input;
-  const header = `$ ${facts.commandLine}${facts.noArguments ? " (ran with no arguments)" : ""}\n${input.statusLine}`;
+  const fed =
+    facts.stdin === undefined
+      ? ""
+      : ` < stdin (${facts.stdin.bytes} bytes #${facts.stdin.digest})`;
+  const header = `$ ${facts.commandLine}${fed}${facts.noArguments ? " (ran with no arguments)" : ""}\n${input.statusLine}`;
   const output = [...input.notices, header, input.body]
     .filter((part) => part.length > 0)
     .join("\n");
@@ -110,6 +116,9 @@ export function renderShellResult(input: ShellResultInput): CompressedToolResult
         rawArgs: facts.rawArgs,
         cwd: facts.cwd,
         shell: facts.shell,
+        ...(facts.stdin === undefined
+          ? {}
+          : { stdinBytes: facts.stdin.bytes, stdinDigest: facts.stdin.digest }),
         ...input.details,
         guardVerdict: facts.guard.action,
         guardRule: facts.guard.rule,

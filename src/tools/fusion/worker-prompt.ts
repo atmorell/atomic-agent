@@ -197,6 +197,16 @@ export const EXACT_SPELLING_RULE =
 export const EDIT_NOT_REWRITE_RULE =
   "- Change a file you already wrote in this task with `os.fs.edit`, never by writing it whole again: every line written again costs minutes of local generation.";
 
+/**
+ * Measured (k8e, 16-11-2026): the core worker wrote a test file to drive
+ * its own code; the judge read it as work outside the task and sent the
+ * task back, and the retry ran out the ten-minute clock. A script on
+ * `os.shell.run`'s `stdin` runs in the working directory, so the
+ * worker's modules import, and leaves no file behind.
+ */
+export const STDIN_SELF_TEST_RULE =
+  "- To try your code without a file, run `os.shell.run` with `cmd` `python` (or `node`), `args` `[\"-\"]` and the script in `stdin`: it runs in the working directory, so your modules import. Never write a test or scratch file your task does not ask for.";
+
 /** The one steer sent when a worker rewrites a file it wrote itself. */
 export function formatRewriteSteer(path: string): string {
   return `You just wrote ${path} whole again although you had already written it in this task. For every further change to a file you wrote, use \`os.fs.edit\` with only the lines that change — a whole-file rewrite costs minutes here.`;
@@ -263,6 +273,7 @@ export function renderWorkerBrief(
     `- Read files only inside ${options.workingDir} and the directories this task writes in; a read anywhere else is refused. Do not search other projects for context — ${request.length > 0 ? "your task, its FILES and the original request are" : "your task and its FILES are"} the context you have.`,
     siblingFilesRule(options.contract !== undefined),
     EDIT_NOT_REWRITE_RULE,
+    STDIN_SELF_TEST_RULE,
     BROWSER_CODE_RULE,
     ...(request.length > 0 ? [EXACT_SPELLING_RULE] : []),
     `- Finish with \`reply\` carrying the concise result of this task (about ${WORKER_REPLY_CHAR_BUDGET} characters at most). That reply is the ONLY thing the orchestrator receives — findings, file paths, decisions and anything it needs to merge your part must be inside it.`,

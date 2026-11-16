@@ -194,8 +194,9 @@ function readsScriptFromStdin(words: readonly string[]): boolean {
  * (`ApprovalRequest.commandUnreadable`): a shell or an interpreter with
  * no script of its own, on a subshell line that feeds it through a pipe,
  * a redirect or a heredoc (`printf 'rm -rf x' | sh`, `sh < run.sh`,
- * `curl … | python3`). The command has no stdin otherwise, so a bare
- * `sh` run directly is not one.
+ * `curl … | python3`). A direct exec reads only the call's own `stdin`,
+ * which is checked as the inline script it is (`stdinAsInlineScript`),
+ * so a bare `sh` run directly is not one.
  */
 export function shellRunsUnreadableScript(
   cmd: string,
@@ -205,4 +206,65 @@ export function shellRunsUnreadableScript(
   if (!useShell) return false;
   if (!/[|<]/.test([cmd, ...execArgs].join(" "))) return false;
   return shellRuleSegments(cmd, execArgs, useShell).some(readsScriptFromStdin);
+}
+
+/** The flag a stdin interpreter takes its code with on the line. */
+function inlineCodeFlag(name: string): string | undefined {
+  if (NESTED_SHELL_PROGRAMS.includes(name) || name.startsWith("python")) return "-c";
+  if (name === "php") return "-r";
+  return STDIN_INTERPRETER_RE.test(name) ? "-e" : undefined;
+}
+
+/**
+ * The arguments a script on the call's `stdin` is checked with (k8e):
+ * `python -` is `python -c <script>`, `bash` is `bash -c <script>`,
+ * `node -` is `node -e <script>` — the same call with the code on the
+ * line, so the guard, the dangerous layer, saved rules and the browser
+ * check read the script rather than a bare interpreter. The lone `-` is
+ * dropped; the flag and the script go first, where every reader of an
+ * inline script looks. `null` when the command does not run its input as
+ * a script: then the input is data, and the real argv is checked.
+ */
+export function stdinAsInlineScript(
+  cmd: string,
+  execArgs: readonly string[],
+  script: string,
+): string[] | null {
+  if (!readsScriptFromStdin([cmd, ...execArgs])) return null;
+  const flag = inlineCodeFlag(programName(cmd));
+  if (flag === undefined) return null;
+  const dash = execArgs.indexOf("-");
+  const rest = dash === -1 ? [...execArgs] : execArgs.filter((_, i) => i !== dash);
+  return [flag, script, ...rest];
+}
+
+/**
+ * Programs that run their input as commands no check reads: `xargs`
+ * builds commands from it, and the Windows shells read commands from it.
+ */
+const STDIN_COMMAND_PROGRAMS: ReadonlySet<string> = new Set([
+  "xargs",
+  "cmd",
+  "powershell",
+  "pwsh",
+]);
+
+/**
+ * Whether the call's `stdin` could run as commands no check reads (k8e):
+ * a program from `STDIN_COMMAND_PROGRAMS` anywhere in the call, or a
+ * stdin interpreter behind a wrapper or a nested shell (`env python -`,
+ * `sudo bash`, `bash -c "sh"`). Only an interpreter named directly gets
+ * its script checked inline (`stdinAsInlineScript`); these are refused.
+ */
+export function stdinFeedsUnreadCommands(
+  cmd: string,
+  execArgs: readonly string[],
+): boolean {
+  const segments = shellRuleSegments(cmd, execArgs, false);
+  return segments.some((words, i) => {
+    const head = words[0];
+    if (head === undefined) return false;
+    if (STDIN_COMMAND_PROGRAMS.has(programName(head))) return true;
+    return i > 0 && readsScriptFromStdin(words);
+  });
 }
