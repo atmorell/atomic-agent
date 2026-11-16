@@ -226,6 +226,17 @@ export const RUN_BEFORE_REREAD_RULE =
 export const SLOW_PASS_RULE =
   "- A run that passes but takes more than a few seconds on a few thousand items has not passed: find the work redone for every item (such as recomputing everything on each change) and fix it with `os.fs.edit` before you reply.";
 
+/**
+ * Measured (k8l, 16-11-2026): the core worker ran every example it was
+ * given and replied done, but none summed a range outside a cycle, so
+ * `ark.py` had no evaluation for a range; the test worker's suite failed
+ * on it. The CLI worker read a corrupt `ark.json` outside its `try`
+ * (k8k: `vis a1` gave a traceback, not "Fejl:"). Each cost a second judge
+ * round, about 120 s. The given examples are a floor, not the coverage.
+ */
+export const NAMED_CASES_RULE =
+  "- The examples in your task are a minimum. Before you reply, also run each function, operator and error your task names once on ordinary input (for an error: bad input, a missing or corrupt file) and check the output is what the task says.";
+
 /** The one steer sent when a worker reads a module it has not run since writing it. */
 export function formatRunBeforeRereadSteer(path: string): string {
   return `You are reading ${path} again without having run it since you wrote it. Run it first: one \`os.shell.run\` with a short script on \`stdin\` that imports it and calls the part in doubt. Then read only the lines the error names.`;
@@ -300,6 +311,7 @@ export function renderWorkerBrief(
     STDIN_SELF_TEST_RULE,
     RUN_BEFORE_REREAD_RULE,
     SLOW_PASS_RULE,
+    NAMED_CASES_RULE,
     BROWSER_CODE_RULE,
     ...(request.length > 0 ? [EXACT_SPELLING_RULE] : []),
     `- Finish with \`reply\` carrying the concise result of this task (about ${WORKER_REPLY_CHAR_BUDGET} characters at most). That reply is the ONLY thing the orchestrator receives — findings, file paths, decisions and anything it needs to merge your part must be inside it.`,

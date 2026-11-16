@@ -18,6 +18,7 @@ import {
   renderWorkerBrief,
   RUN_BEFORE_REREAD_RULE,
   SLOW_PASS_RULE,
+  NAMED_CASES_RULE,
   formatRunBeforeRereadSteer,
   siblingFilesRule,
   START_LISTING_LIMIT,
@@ -181,6 +182,17 @@ describe("renderWorkerBrief — siblings and browser code (ATO-919)", () => {
     expect(at).toBeLessThan(brief.indexOf("- Finish with `reply`"));
     expect(SLOW_PASS_RULE).toMatch(/has not passed/);
     expect(SLOW_PASS_RULE).toContain("`os.fs.edit`");
+  });
+
+  it("tells the worker its examples are a minimum (k8l)", () => {
+    // k8l: no example summed a range outside a cycle and the CLI read a
+    // corrupt file outside its try; the judge sent both back.
+    const brief = renderWorkerBrief(TASK, { workingDir: "/repo" });
+    const at = brief.indexOf(NAMED_CASES_RULE);
+    expect(at).toBeGreaterThan(brief.indexOf(SLOW_PASS_RULE));
+    expect(at).toBeLessThan(brief.indexOf("- Finish with `reply`"));
+    expect(NAMED_CASES_RULE).toMatch(/a minimum/);
+    expect(NAMED_CASES_RULE).toMatch(/corrupt file/);
   });
 });
 
