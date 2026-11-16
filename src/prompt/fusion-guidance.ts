@@ -91,8 +91,8 @@ export const FUSION_GUIDANCE = [
   // k8a (16-11-2026): one six-file task ran 543 s while the tests task
   // was done at 180 s and its slot sat idle; the fan-out is as slow as
   // its longest task. Paid for by trimming the two lines after it.
-  "Plan in the open and delegate in the same turn: list the independent parts, a big one per worker, small ones shared; the longest sets the pace: split an outsized one along a `contract`.",
-  "One task per part, in one `fusion.delegate` call; its `files` name the paths it will produce (approved once for workers). Each `instructions` must stand alone: workers see the operator's request, not this chat.",
+  "Plan in the open and delegate in the same turn — never stop at the plan: list the independent parts, a big one per worker, small ones shared; the longest sets the pace: split an outsized one along a `contract`.",
+  "One task per part, in one `fusion.delegate` call; its `files` name the paths it will produce (approved once for workers). Each `instructions` must stand alone: workers see the operator's request, not this chat, and cannot ask.",
   // k8i (16-11-2026): the judge sent io back once over a 6-decimal
   // format the brief only described; a worker runs given examples first
   // (`STDIN_SELF_TEST_RULE`). Paid for by dropping "You choose
@@ -106,23 +106,16 @@ export const FUSION_GUIDANCE = [
   // spent ~250 s failing to speed up the design it was told to use
   // (Fable, same day). Paid for by "Mutating tools" below and by
   // shorter wording in the first, second, rework and "Yours alone" lines.
-  // k8al, k8an, k8ap (16-11-2026): `=SUM(A1:A3, B1*2)` failed facit in
-  // three runs: the parser read an argument that starts with a cell as a
-  // range. The request allowed "a range or an expression"; no brief had
-  // an expression that starts like a range, so no check ran one (Fable,
-  // same day). Paid for by ", and cannot ask", which "stand alone" says;
-  // by "— never stop at the plan", which "in the same turn" says; and by
-  // shorter wording in the judgement, rework and last lines.
-  "Give the trickiest part 4-6 input -> expected examples to run first, one where the request's 'X or Y' gets a Y starting like an X, one full-size with a time limit your design meets: no redo-all per change.",
+  "Give the trickiest part 4-6 input -> expected examples to run first, one full-size with a time limit your design meets: no redo-all per change.",
   "Mutating tools are refused for you by design.",
-  "Keep the design and judgement: read each reply against its brief.",
+  "Keep the design and judgement: read every reply against its brief.",
   VERIFY_LINE,
-  "Rework goes back out: `failed`, `cancelled`, `needs_orchestrator` or weak is another `fusion.delegate` saying what was wrong, what good looks like.",
+  "Rework goes back out: `failed`, `cancelled`, `needs_orchestrator` or weak is another `fusion.delegate` saying what was wrong and what good looks like.",
   // F43: the status table now says `replaced the user's file sales.csv
   // (2,401 → 9 lines)` on the row; this is what to do about it.
   "A task that replaced an existing file is not done until the file is restored (`os.fs.restore` in a worker) or the replacement was asked for.",
   "Yours alone: the decision asked of you, a part that only makes sense with this conversation, approvals.",
-  "Call `fusion.delegate` on its own, never alongside others.",
+  "Call `fusion.delegate` on its own, never alongside other calls.",
 ].join("\n");
 
 /**
