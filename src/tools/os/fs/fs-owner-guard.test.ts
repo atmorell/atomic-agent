@@ -10,7 +10,7 @@ import {
 } from "../../../approval/approval-gate.js";
 import type { AgentLoopEvent } from "../../../agent/agent-loop.js";
 import type { CompressedToolResult } from "../../../compressor/result-compressor.js";
-import { resolveContractOwners } from "../../fusion/contract-inputs.js";
+import { ownersFromTaskFiles, resolveContractOwners } from "../../fusion/contract-inputs.js";
 import { WorkerRunCollector } from "../../fusion/worker-result.js";
 import type { ToolContext } from "../../tool-registry.js";
 import { DeclaredInputsRegistry } from "./fs-declared-inputs.js";
@@ -18,6 +18,7 @@ import { buildOsFsEditTool } from "./fs-edit.js";
 import { buildOsFsMoveTool } from "./fs-move.js";
 import { buildOsFsPatchTool } from "./fs-patch.js";
 import { buildOsFsRestoreTool } from "./fs-restore.js";
+import { buildOsFsTrashTool } from "./fs-trash.js";
 import { FileRestoreStore } from "./fs-restore-store.js";
 import { buildOsFsWriteTool } from "./fs-write.js";
 
@@ -145,6 +146,45 @@ describe("owner guard (k8e)", () => {
     expect(existsSync(join(dir, "stub.py"))).toBe(true);
   });
 
+  it("refuses to trash another task's path, before the prompt, and the file stays (k8ba)", async () => {
+    const main = join(dir, "ark", "__main__.py");
+    await writeFile(main, "from ark.cli import main\n", "utf8");
+    const trash = await buildOsFsTrashTool(options()).run(
+      { paths: ["ark/__main__.py"] },
+      ctx(),
+    );
+    expect(trash.status).toBe("error");
+    expect(trash.summary).toBe(REFUSAL);
+    expect(prompts).toHaveLength(0);
+    expect(existsSync(main)).toBe(true);
+  });
+
+  it("arms the same guard from the tasks' files when the contract names no owners (k8ba)", async () => {
+    const owners = ownersFromTaskFiles(
+      [
+        { id: "kerne", files: ["ark/core.py", "tests/test_core.py"] },
+        { id: "cli", files: ["ark/cli.py", "ark/__main__.py"] },
+      ],
+      dir,
+    );
+    expect(owners).toEqual({
+      "ark/core.py": "kerne",
+      "tests/test_core.py": "kerne",
+      "ark/cli.py": "cli",
+      "ark/__main__.py": "cli",
+    });
+    arm("s-kerne-files", "kerne", owners);
+    const write = buildOsFsWriteTool(options());
+    const refused = await write.run(
+      { path: "ark/__main__.py", content: "x\n" },
+      ctx("s-kerne-files"),
+    );
+    expect(refused.summary).toBe(REFUSAL);
+    expect(
+      (await write.run({ path: "ark/core.py", content: "y\n" }, ctx("s-kerne-files"))).status,
+    ).toBe("ok");
+  });
+
   it("lets a task write its own paths and any path no task owns", async () => {
     const write = buildOsFsWriteTool(options());
     expect((await write.run({ path: "ark/core.py", content: "X = 1\n" }, ctx())).status).toBe("ok");
@@ -204,6 +244,51 @@ describe("owner guard (k8e)", () => {
     collector.observe(executed(await write.run({ path: "ark/__main__.py", content: "a\n" }, ctx())));
     collector.observe(executed(await write.run({ path: "ark/core.py", content: "b\n" }, ctx())));
     expect(collector.writtenPaths()).toEqual([join(dir, "ark", "core.py")]);
+  });
+});
+
+describe("ownersFromTaskFiles (k8ba)", () => {
+  const dir = join(tmpdir(), "atomic-owners-from-files");
+
+  it("drops a path two tasks list, globs, folders and blanks", () => {
+    expect(
+      ownersFromTaskFiles(
+        [
+          { id: "a", files: ["pkg/__init__.py", "pkg/a.py", "src/*.py", "pkg/", ".", "  "] },
+          { id: "b", files: ["pkg/__init__.py", "pkg/b.py"] },
+        ],
+        dir,
+      ),
+    ).toEqual({ "pkg/a.py": "a", "pkg/b.py": "b" });
+  });
+
+  it("keeps a path one task lists twice", () => {
+    expect(
+      ownersFromTaskFiles(
+        [
+          { id: "a", files: ["pkg/a.py", "./pkg/a.py"] },
+          { id: "b", files: ["pkg/b.py"] },
+        ],
+        dir,
+      ),
+    ).toEqual({ "pkg/a.py": "a", "pkg/b.py": "b" });
+  });
+
+  it("gives nothing for one task, or tasks without files", () => {
+    expect(ownersFromTaskFiles([{ id: "a", files: ["pkg/a.py"] }], dir)).toBeUndefined();
+    expect(ownersFromTaskFiles([{ id: "a" }, { id: "b", files: [] }], dir)).toBeUndefined();
+  });
+
+  it("loses to a contract's own owners", () => {
+    const fromFiles = ownersFromTaskFiles(
+      [
+        { id: "a", files: ["pkg/a.py"] },
+        { id: "b", files: ["pkg/b.py"] },
+      ],
+      dir,
+    );
+    const contract = { "pkg/b.py": "a" };
+    expect(resolveContractOwners(contract ?? fromFiles, "a", dir)).toBeNull();
   });
 });
 

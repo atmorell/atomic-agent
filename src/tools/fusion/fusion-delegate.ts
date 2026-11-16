@@ -89,7 +89,7 @@ import {
   type JudgeSession,
   type JudgeVerdict,
 } from "./judge.js";
-import { strayWrites } from "./contract-inputs.js";
+import { ownersFromTaskFiles, strayWrites } from "./contract-inputs.js";
 import { unchangedAcrossAttempts } from "./declared-files.js";
 import { reviewedNote } from "./reviewed-note.js";
 import type { DelegateTask } from "./delegate-args.js";
@@ -946,6 +946,10 @@ export function buildFusionDelegateTool(
       // Inside a wave the tasks are split across the role legs (ATO-943).
       // A resumed run still owes the merges it was cut off with.
       const merges: MergeTaskSuggestion[] = [...(resumedFrom?.merges ?? [])];
+      // Who owns what when the contract does not say (k8ba): each file
+      // exactly one task lists. Over the whole fan-out, so a judge's
+      // retry of one task still keeps off its siblings' files.
+      const fileOwners = ownersFromTaskFiles(parsed.tasks, ctx.workingDir);
       const runTasks = async (
         tasks: readonly DelegateTask[],
         contract: DelegateContract | undefined,
@@ -989,6 +993,7 @@ export function buildFusionDelegateTool(
           {
             ...(originalRequest === undefined ? {} : { originalRequest }),
             ...(contract === undefined ? {} : { contract }),
+            ...(fileOwners === undefined ? {} : { fileOwners }),
             parentSessionId: ctx.sessionId,
             tasks,
             maxWorkers,
@@ -1049,6 +1054,7 @@ export function buildFusionDelegateTool(
           {
             ...(originalRequest === undefined ? {} : { originalRequest }),
             ...(contract === undefined ? {} : { contract }),
+            ...(fileOwners === undefined ? {} : { fileOwners }),
             parentSessionId: ctx.sessionId,
             tasks,
             maxWorkers: local

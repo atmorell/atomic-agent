@@ -16,8 +16,8 @@ import type { DeclaredInputsRegistry } from "./fs-declared-inputs.js";
  * `__main__.py` within its first step, and later a test file to drive
  * its own code; the judge read both as work outside its task and sent it
  * back, and the retry ran out the ten-minute clock. So `os.fs.write`,
- * `os.fs.edit`, `os.fs.patch`, `os.fs.move` (either end) and
- * `os.fs.restore` refuse such a path before the approval prompt, with no
+ * `os.fs.edit`, `os.fs.patch`, `os.fs.move` (either end), `os.fs.restore`
+ * and `os.fs.trash` (k8ba) refuse such a path before the approval prompt, with no
  * `overwrite` exemption, and the refusal tells the worker to build
  * against the contract's names and say what it needed — a stand-in
  * written under another name is the same stray. A dry-run patch writes

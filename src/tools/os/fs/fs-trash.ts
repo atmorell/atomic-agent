@@ -5,6 +5,7 @@ import { compressToolResult } from "../../../compressor/result-compressor.js";
 import type { ToolDefinition } from "../../tool-registry.js";
 import { runCommand } from "../../../sandbox/command-runner.js";
 import { resolveUserPath } from "../expand-home.js";
+import { checkForeignOwner, refuseForeignOwnerWrite } from "./fs-owner-guard.js";
 import {
   requireFsApproval,
   type FsDangerousToolOptions,
@@ -134,6 +135,9 @@ export function buildOsFsTrashTool(
       const { paths } = parseTrashArgs(rawArgs);
 
       const absolutes = paths.map((p) => resolveUserPath(p, ctx.workingDir));
+      // Trashing a path another task owns loses that task's file (k8ba).
+      const foreign = checkForeignOwner(options.declaredInputs, ctx, absolutes);
+      if (foreign !== null) return refuseForeignOwnerWrite(OS_FS_TRASH_CONTRACT.name, foreign);
       const preview =
         absolutes.length <= 12
           ? absolutes.join("\n")

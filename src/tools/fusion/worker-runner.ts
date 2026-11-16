@@ -667,6 +667,13 @@ export interface RunWorkerTasksOptions {
    * (`renderWorkerBrief`). Checked after the fan-out by the caller.
    */
   contract?: DelegateContract;
+  /**
+   * Owners read from every task's `files` (`ownersFromTaskFiles`), for a
+   * contract that names none: the same guard, armed from what the
+   * orchestrator already wrote per task. Computed once over the whole
+   * fan-out, so a retry of one task still knows its siblings' files.
+   */
+  fileOwners?: Readonly<Record<string, string>>;
   signal: AbortSignal;
   /**
    * Asked before each task starts: a reason means the task is not
@@ -1095,8 +1102,10 @@ async function runOneTask(
     // The contract's owners (k8e): a path it gives another task is refused
     // to this worker's file tools (`fs-owner-guard.ts`), so the worker
     // builds against the contract's names instead of writing a stand-in.
+    // A contract with no `owners` falls back to the tasks' own `files`
+    // (k8ba): a file only one task lists is that task's.
     const owners = resolveContractOwners(
-      options.contract?.owners,
+      options.contract?.owners ?? options.fileOwners,
       task.id,
       pathBase ?? workingDir,
     );

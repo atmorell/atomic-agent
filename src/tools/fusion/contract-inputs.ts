@@ -107,6 +107,46 @@ export function resolveContractOwners(
 }
 
 /**
+ * Owners read from the tasks' own `files` lists, for a fan-out whose
+ * contract names none (k8ba, 16-11-2026): the orchestrator gave the CLI
+ * task `ark/__main__.py` in its `files` but wrote no `owners`, so nothing
+ * stopped the core worker from overwriting it, and the core's retry then
+ * trashed it as its own stray — one more orchestrator call to put it
+ * back. A path listed by exactly one task is that task's; a path two
+ * tasks list is shared and guards nothing, and so does a glob or a
+ * folder (`dir/`, `.`), which would fence off far more than one file.
+ * `undefined` with fewer than two tasks or nothing to give.
+ */
+export function ownersFromTaskFiles(
+  tasks: readonly Pick<DelegateTask, "id" | "files">[],
+  workingDir: string,
+): Record<string, string> | undefined {
+  if (tasks.length < 2) return undefined;
+  const byKey = new Map<string, { path: string; owner: string | null }>();
+  for (const task of tasks) {
+    for (const raw of task.files ?? []) {
+      const path = raw.trim();
+      if (path.length === 0 || path === "." || GLOB_CHARS.test(path)) continue;
+      if (path.endsWith("/") || path.endsWith("\\")) continue;
+      let key: string;
+      try {
+        key = ownerKey(resolveUserPath(path, workingDir));
+      } catch {
+        continue;
+      }
+      const prior = byKey.get(key);
+      if (prior === undefined) byKey.set(key, { path, owner: task.id });
+      else if (prior.owner !== task.id) prior.owner = null;
+    }
+  }
+  const out: Record<string, string> = {};
+  for (const { path, owner } of byKey.values()) {
+    if (owner !== null) out[path] = owner;
+  }
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
+/**
  * The declared inputs as the worker's tools will spell them: absolute,
  * resolved against `workingDir` the way `resolveUserPath` resolves a
  * tool's `path`. Globs and unresolvable entries are left out; they
