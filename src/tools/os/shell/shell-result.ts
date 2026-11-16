@@ -8,6 +8,7 @@ import type {
   CommandJobExit,
   CommandJobOutput,
 } from "../../../sandbox/command-job.js";
+import { describeMemoryKill } from "../../../sandbox/memory-guard.js";
 import type { GuardVerdict } from "../shell-command-guard/index.js";
 import {
   formatShellTimeoutNotice,
@@ -160,7 +161,23 @@ export function tailShellOutput(text: string, count: number): string {
 }
 
 export function formatExitStatus(exit: CommandJobExit): string {
+  if (exit.memoryLimitHit !== undefined) return "killed (memory limit)";
   return `${exit.exitCode ?? "signal:" + exit.signal}`;
+}
+
+/** Said first when the memory guard killed the command; empty otherwise. */
+export function memoryKillNotices(exit: CommandJobExit): string[] {
+  if (exit.memoryLimitHit === undefined) return [];
+  return [
+    `Killed after ${exit.durationMs} ms: ${describeMemoryKill(exit.memoryLimitHit, exit.memoryPeakBytes)}.`,
+  ];
+}
+
+function memoryDetails(exit: CommandJobExit): Record<string, unknown> {
+  return {
+    ...(exit.memoryLimitHit === undefined ? {} : { memoryLimitHit: exit.memoryLimitHit }),
+    ...(exit.memoryPeakBytes === undefined ? {} : { memoryPeakBytes: exit.memoryPeakBytes }),
+  };
 }
 
 /** The result of a command that ran to its exit — fresh, or collected by a `wait`. */
@@ -173,7 +190,7 @@ export function renderShellExit(
   return renderShellResult({
     facts,
     status: exit.exitCode === 0 ? "ok" : "error",
-    notices: extra.notices ?? [],
+    notices: [...memoryKillNotices(exit), ...(extra.notices ?? [])],
     statusLine: `exit: ${formatExitStatus(exit)}`,
     body: joinShellOutput(output),
     details: {
@@ -181,6 +198,7 @@ export function renderShellExit(
       signal: exit.signal,
       durationMs: exit.durationMs,
       timedOut: false,
+      ...memoryDetails(exit),
       ...(extra.jobId === undefined ? {} : { jobId: extra.jobId }),
       truncated: output.truncated,
       outputStreams: shellOutputStreams(output),

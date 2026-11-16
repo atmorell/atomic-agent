@@ -25,6 +25,8 @@ export interface CheckSubject {
   readonly kind: "command" | "service" | "page";
   readonly exitCode?: number | null;
   readonly timedOut?: boolean;
+  /** Killed by the memory guard. */
+  readonly memoryLimitHit?: boolean;
   /** Full captured output (capped), not just the tail in the result. */
   readonly stdout?: string;
   readonly stderr?: string;
@@ -78,7 +80,10 @@ function checkExit(check: string, tokens: string[], s: CheckSubject): CheckOutco
   const wanted = Number.parseInt((negated || a === "==" ? b : a) ?? "", 10);
   if (!Number.isInteger(wanted)) return outcome(check, false, "unknown check: expected `exit <code>`");
   if (s.exitCode === undefined) return outcome(check, false, `no exit code for a ${s.kind} run`);
-  const actual = s.exitCode === null ? (s.timedOut ? "killed (timed out)" : "killed by signal") : `exit ${s.exitCode}`;
+  const actual =
+    s.exitCode === null
+      ? s.memoryLimitHit ? "killed (memory limit)" : s.timedOut ? "killed (timed out)" : "killed by signal"
+      : `exit ${s.exitCode}`;
   const ok = negated ? s.exitCode !== wanted : s.exitCode === wanted;
   return outcome(check, ok, actual);
 }

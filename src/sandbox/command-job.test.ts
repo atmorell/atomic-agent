@@ -114,3 +114,28 @@ describe.skipIf(process.platform === "win32")("startCommandJob", () => {
     expect(out.stdout).toContain("bytes dropped");
   });
 });
+
+describe("startCommandJob memory guard", () => {
+  it("kills a tree over the limit and reports it instead of an exit code", async () => {
+    // 20 MB filled buffers every 50 ms up to 600 MB, then idle: only the guard ends it.
+    const script =
+      "const b=[];setInterval(()=>{if(b.length<30)b.push(Buffer.alloc(20*1024*1024,1))},50);setTimeout(()=>{},60000)";
+    const job = startCommandJob(process.execPath, ["-e", script], {
+      cwd,
+      memoryLimitBytes: 200 * 1024 * 1024,
+    });
+    expect(await job.waitFor(25_000)).toBe("exited");
+    const exit = await awaitJobExit(job);
+    expect(exit.memoryLimitHit).toBe("limit");
+    expect(exit.exitCode).toBeNull();
+    expect(exit.memoryPeakBytes).toBeGreaterThan(200 * 1024 * 1024);
+  }, 30_000);
+
+  it("leaves a job without a limit unguarded", async () => {
+    const job = startCommandJob(process.execPath, ["-e", "process.exit(0)"], { cwd });
+    const exit = await awaitJobExit(job, 10_000);
+    expect(exit.exitCode).toBe(0);
+    expect(exit).not.toHaveProperty("memoryLimitHit");
+    expect(exit).not.toHaveProperty("memoryPeakBytes");
+  });
+});

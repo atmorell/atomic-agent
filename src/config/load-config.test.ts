@@ -337,6 +337,7 @@ describe("loadConfig", () => {
           jobMaxMs: 7_200_000,
           maxJobs: 5,
           envPassthrough: ["GITHUB_TOKEN"],
+          memoryLimitMb: 2048,
         },
         screen: { enabled: false, point: true },
       },
@@ -352,6 +353,7 @@ describe("loadConfig", () => {
       jobMaxMs: 7_200_000,
       maxJobs: 5,
       envPassthrough: ["GITHUB_TOKEN"],
+      memoryLimitMb: 2048,
     });
   });
 

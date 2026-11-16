@@ -178,6 +178,35 @@ describe("os.shell.run ingestion cap", () => {
   });
 });
 
+describe("os.shell.run says when the memory guard killed the command", () => {
+  it("says it first, with no exit code and the peak in the details", () => {
+    const result = renderShellExit(
+      facts("python"),
+      {
+        exitCode: null,
+        signal: null,
+        durationMs: 4200,
+        memoryLimitHit: "limit",
+        memoryPeakBytes: 9000 * 1024 * 1024,
+      },
+      { stdout: "step 1\n", stderr: "", truncated: false },
+    );
+    expect(result.status).toBe("error");
+    const lines = result.summary.split("\n");
+    expect(lines[0]).toBe(
+      "Killed after 4200 ms: this command's processes went over the memory limit at 9000 MB — look for a loop that never ends or data that grows without bound.",
+    );
+    expect(result.summary).toContain("exit: killed (memory limit)");
+    expect(result.details).toMatchObject({ memoryLimitHit: "limit", memoryPeakBytes: 9000 * 1024 * 1024 });
+  });
+
+  it("adds nothing to an ordinary exit", () => {
+    const result = run("npm", "ok");
+    expect(result.summary).not.toContain("memory");
+    expect(result.details).not.toHaveProperty("memoryLimitHit");
+  });
+});
+
 describe("os.shell.run says which streams its body holds", () => {
   it("names stdout, stderr, both or none, as joinShellOutput joined them", () => {
     const out = (stdout: string, stderr: string) =>

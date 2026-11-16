@@ -123,6 +123,12 @@ export interface OsShellToolOptions extends DangerousToolOptions {
    * none, so embedders and tests get the filtered environment too.
    */
   envPassthrough?: readonly string[];
+  /**
+   * `tools.shell.memoryLimitMb`: the private memory a command's process
+   * tree may hold before the guard kills it; `0` = off. Omitted
+   * (embedders, tests) ⇒ unguarded.
+   */
+  memoryLimitMb?: number;
   /** Test seam: the prompt watch's poll and quiet intervals. */
   promptWatch?: { pollMs?: number; quietMs?: number };
   /** Test seam: how long a `background: true` command is watched. */
@@ -404,6 +410,9 @@ export function buildOsShellTool(options: OsShellToolOptions): ToolDefinition {
         ? { windowsVerbatimArguments: true }
         : {}),
       ...(stdin === null ? {} : { stdin: stdin.text }),
+      ...(options.memoryLimitMb !== undefined && options.memoryLimitMb > 0
+        ? { memoryLimitBytes: options.memoryLimitMb * 1024 * 1024 }
+        : {}),
     });
     // `node --check a b c` exits 0 having read only `a`. Said first,
     // because nothing in node's own output says it — and a reply built

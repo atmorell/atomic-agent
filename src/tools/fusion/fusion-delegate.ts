@@ -1426,6 +1426,11 @@ export function buildFusionDelegateTool(
           if (verifyArgs === undefined || deps.dispatchVerify === undefined) return;
           if ([...breakers.values()].some((b) => b.tripped() !== undefined)) return;
           const startedAt = Date.now();
+          // Said before it runs: a verify command can run for minutes
+          // (k8az, 15-11-2026: a runaway test held the machine with no
+          // log line to say what was running). Never the command itself
+          // — shell commands stay out of the log.
+          deps.logger.info("fusion: verify before the judge starts", {});
           try {
             const verdict = classifyVerifyResult(
               await deps.dispatchVerify(verifyArgs, { ...ctx, signal: runSignal }),
@@ -1438,8 +1443,12 @@ export function buildFusionDelegateTool(
                 : { reason: verdict.reason.slice(0, 200) }),
               ms: Date.now() - startedAt,
             });
-          } catch {
+          } catch (err) {
             // Not run: autoverify runs it after the judge, as before.
+            deps.logger.warn("fusion: verify before the judge failed", {
+              error: (err instanceof Error ? err.message : String(err)).slice(0, 200),
+              ms: Date.now() - startedAt,
+            });
           }
         };
         // What a task wrote that the contract gives no task (Fable 3); a

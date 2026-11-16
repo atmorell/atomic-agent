@@ -212,6 +212,7 @@ export function registerOsTools(
       approvalRequired: options.approvalRequired,
       defaultTimeoutMs: options.config.tools.shell.defaultTimeoutMs,
       envPassthrough: options.config.tools.shell.envPassthrough,
+      memoryLimitMb: options.config.tools.shell.memoryLimitMb,
       ...(options.shellPolicy === undefined
         ? {}
         : { shellPolicy: options.shellPolicy }),

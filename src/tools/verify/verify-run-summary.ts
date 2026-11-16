@@ -3,6 +3,7 @@
  * happened, then the output tails — clipped to 4,000 chars, because the
  * whole thing lands in the prompt.
  */
+import { describeMemoryKill } from "../../sandbox/memory-guard.js";
 import type { CheckOutcome } from "./verify-checks.js";
 import type { VerifyRunResult } from "./run-verify.js";
 
@@ -23,6 +24,7 @@ function checkLine(c: CheckOutcome): string {
 function outcomeLine(r: VerifyRunResult): string {
   if (r.error !== undefined) return r.error;
   if (r.kind === "command") {
+    if (r.memoryLimitHit !== undefined) return memoryLine(r);
     const exit = r.exitCode === null ? (r.timedOut ? "killed: timed out" : "killed by signal") : `exit ${r.exitCode}`;
     return `${exit} after ${r.durationMs} ms`;
   }
@@ -33,6 +35,11 @@ function outcomeLine(r: VerifyRunResult): string {
     return `${ready}; ${requests.length} request(s), ${failed} failed`;
   }
   return `page ran ${Math.round(r.durationMs / 100) / 10}s: ${r.errors?.length ?? 0} uncaught error(s), ${r.consoleErrors?.length ?? 0} console error(s), ${r.missingSelectors?.length ?? 0} failed selector lookup(s)`;
+}
+
+function memoryLine(r: VerifyRunResult): string {
+  const reason = r.memoryLimitHit ?? "limit";
+  return `killed after ${r.durationMs} ms: ${describeMemoryKill(reason, r.memoryPeakBytes)}`;
 }
 
 function tailBlock(label: string, tail: string | undefined, budget: number): string[] {

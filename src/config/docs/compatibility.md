@@ -31,6 +31,10 @@ The desktop app and the terminal share one state dir and one `config.json`, and 
 
 `tui.showSteps` (boolean) is additive and unversioned: a file without it reads `false`, so a finished turn in the terminal chat folds its tool cards and reasoning into one summary line; `true` keeps every finished turn open, as before. `/steps on|off` writes it. A non-boolean is a validation error. [TUI config tests](../tui-config.test.ts) cover it.
 
+## Command memory limit
+
+`tools.shell.memoryLimitMb` (non-negative integer) is additive and unversioned: a file without it reads `8192`, so an `os.shell.run` or `verify.run` command whose process tree holds more than 8 GiB is killed, and on Windows a tree of 1 GiB or more is killed when the machine is nearly out of commit. Before it nothing bounded a command's memory. `0` turns the guard off. [Config schema tests](../config-schema.test.ts) cover parsing; [memory guard tests](../../sandbox/memory-guard.test.ts) cover the triggers.
+
 ## Atomic Core backend variant
 
 `localModels.managed.coreBackendVariant` (`auto` or `cpu`) is additive and unversioned: a file without it reads `auto`, Core's recommended build, as before. It is the Atomic Core engine's own key on purpose. `localModels.managed.backendVariant` belongs to the llama-server engine, whose start rescue wrote `cpu` there on any health timeout, including on machines whose GPU build works; files moved to `atomic-core` by version 77 still carry it, and reading it for Core would move them to the slower CPU build. Only Core's own rescue writes `coreBackendVariant: "cpu"`, after the CPU build served a model the GPU build crashed on. [Local model config tests](../local-models/local-models-config.test.ts) and [Core backend variant tests](../../local-llm/core/core-backend-variant.test.ts) cover it.

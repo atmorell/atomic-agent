@@ -72,6 +72,23 @@ describe("runVerify — command", () => {
     expect(out.summary).toContain("note: This looks like a full-screen terminal");
   });
 
+  it("kills a command whose memory runs away, and a check on a failing exit cannot pass it", async () => {
+    // 20 MB filled buffers every 50 ms up to 600 MB, then idle: only the guard ends it.
+    const script =
+      "const b=[];setInterval(()=>{if(b.length<30)b.push(Buffer.alloc(20*1024*1024,1))},50);setTimeout(()=>{},60000)";
+    const out = await runVerify(
+      { kind: "command", cmd: NODE, args: ["-e", script], timeoutMs: 25_000, checks: ["exit != 0"] },
+      ctx({ memoryLimitBytes: 200 * 1024 * 1024 }),
+    );
+    expect(out.memoryLimitHit).toBe("limit");
+    expect(out.exitCode).toBeNull();
+    expect(out.timedOut).toBe(false);
+    expect(out.ok).toBe(false);
+    expect(out.memoryPeakBytes).toBeGreaterThan(200 * 1024 * 1024);
+    expect(out.summary).toContain("went over the memory limit");
+    expect(out.checks?.[0]?.detail).toBe("killed (memory limit)");
+  }, 30_000);
+
   it("adds no terminal note to an ordinary failure", async () => {
     const out = await runVerify(
       { kind: "command", cmd: NODE, args: ["-e", "console.error('AssertionError: 1 != 2'); process.exit(1)"] },

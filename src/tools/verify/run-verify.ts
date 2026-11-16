@@ -31,6 +31,10 @@ export interface VerifyRunResult {
   readonly commandLine?: string;
   readonly exitCode?: number | null;
   readonly timedOut?: boolean;
+  /** The memory guard killed the command: over `tools.shell.memoryLimitMb`, or the machine was out of commit. */
+  readonly memoryLimitHit?: "limit" | "commit";
+  /** Largest process-tree size the guard saw, in bytes. */
+  readonly memoryPeakBytes?: number;
   readonly stdoutTail?: string;
   readonly stderrTail?: string;
   readonly ready?: boolean;
@@ -53,6 +57,8 @@ export interface VerifyRunContext {
   /** Browser settings for page runs; `getConfig().browser` when omitted. */
   readonly config?: Pick<AtomicAgentConfig, "browser">;
   readonly signal?: AbortSignal;
+  /** Memory limit for a command run's process tree; `getConfig().tools.shell.memoryLimitMb` when omitted, 0 = off. */
+  readonly memoryLimitBytes?: number;
   /** Test seams. */
   readonly launchBrowser?: BrowserLauncher;
   readonly fetchImpl?: FetchLike;
@@ -144,7 +150,12 @@ async function runInWorkspace(args: VerifyRunArgs, dir: string, isolated: boolea
   const cwd = await resolveRunCwd(dir, ctx.workingDir, args.cwd);
   const common = { kind: args.kind, isolated };
   if (args.kind === "command") {
-    const out = await runCommandKind(args, { cwd, signal: ctx.signal });
+    const memoryLimitBytes = ctx.memoryLimitBytes ?? getConfig().tools.shell.memoryLimitMb * 1024 * 1024;
+    const out = await runCommandKind(args, { cwd, signal: ctx.signal, memoryLimitBytes });
+    const memory = {
+      ...(out.memoryLimitHit === undefined ? {} : { memoryLimitHit: out.memoryLimitHit }),
+      ...(out.memoryPeakBytes === undefined ? {} : { memoryPeakBytes: out.memoryPeakBytes }),
+    };
     // A process that never started, timed out or was killed by a signal
     // fails whatever the checks say; a real exit code is the checks' call
     // when one names it, else it must be 0.
@@ -154,8 +165,8 @@ async function runInWorkspace(args: VerifyRunArgs, dir: string, isolated: boolea
       (out.spawnError === undefined && !out.timedOut && out.exitCode !== null && checksRuleOnExit(args.checks));
     const hint = ranClean ? undefined : terminalAppHint(out.stdout, out.stderr);
     return finish(
-      { ...common, ...(hint === undefined ? {} : { hint }), commandLine: out.commandLine, exitCode: out.exitCode, timedOut: out.timedOut, stdoutTail: out.stdoutTail, stderrTail: out.stderrTail, ...(out.spawnError === undefined ? {} : { error: `could not start \`${out.commandLine}\`: ${out.spawnError}` }) },
-      { kind: "command", exitCode: out.exitCode, timedOut: out.timedOut, stdout: out.stdout, stderr: out.stderr },
+      { ...common, ...(hint === undefined ? {} : { hint }), commandLine: out.commandLine, exitCode: out.exitCode, timedOut: out.timedOut, ...memory, stdoutTail: out.stdoutTail, stderrTail: out.stderrTail, ...(out.spawnError === undefined ? {} : { error: `could not start \`${out.commandLine}\`: ${out.spawnError}` }) },
+      { kind: "command", exitCode: out.exitCode, timedOut: out.timedOut, ...(out.memoryLimitHit === undefined ? {} : { memoryLimitHit: true }), stdout: out.stdout, stderr: out.stderr },
       args.checks, runOk, started,
     );
   }

@@ -1070,6 +1070,12 @@ export interface UserConfigFile {
 // `notion` skills working. An older file has no field and takes the
 // default. A DEFAULT-BEHAVIOUR CHANGE for a command that relied on any
 // other inherited key; the fix is one line in config.
+// Unversioned, additive: `tools.shell.memoryLimitMb` (default `8192`,
+// `0` = off). An `os.shell.run` or `verify.run` command whose process
+// tree holds more private memory than this is killed, and on Windows a
+// tree of 1 GiB or more is killed when free commit runs low
+// (`src/sandbox/memory-guard.ts`). An older file has no field and takes
+// the default; before it nothing bounded a command's memory.
 // Unversioned, additive: `localModels.drySampler` (default `false`,
 // ATO-332). `true` adds llama.cpp's DRY anti-repeat sampler fields to
 // every `/completion` request, window 256 tokens (`src/llm/dry-sampler.ts`); only llama.cpp

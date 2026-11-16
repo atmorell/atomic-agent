@@ -20,6 +20,12 @@ export type {
 export { CappedOutput } from "./capped-output.js";
 export type { CappedOutputSnapshot } from "./capped-output.js";
 export { killProcessTree } from "./kill-process-tree.js";
+export { attachMemoryGuard, describeMemoryKill } from "./memory-guard.js";
+export type {
+  MemoryGuard,
+  MemoryGuardOptions,
+  MemoryGuardReason,
+} from "./memory-guard.js";
 export type {
   KillableChild,
   KillProcessTreeOptions,

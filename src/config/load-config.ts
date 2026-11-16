@@ -483,6 +483,7 @@ export function loadConfig(): AtomicAgentConfig {
         jobMaxMs: user.tools.shell.jobMaxMs,
         maxJobs: user.tools.shell.maxJobs,
         envPassthrough: [...user.tools.shell.envPassthrough],
+        memoryLimitMb: user.tools.shell.memoryLimitMb,
       },
       screen: { enabled: user.tools.screen.enabled, point: user.tools.screen.point },
     },

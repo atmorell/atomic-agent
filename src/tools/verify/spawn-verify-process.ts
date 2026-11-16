@@ -21,6 +21,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 import { buildCommandEnv } from "../../sandbox/command-env.js";
 import { killProcessTree } from "../../sandbox/kill-process-tree.js";
+import { attachMemoryGuard, type MemoryGuardReason } from "../../sandbox/memory-guard.js";
 import {
   buildDirectInvocation,
   buildSubshellInvocation,
@@ -77,6 +78,13 @@ export interface SpawnVerifyOptions {
   network: boolean;
   timeoutMs: number;
   signal?: AbortSignal;
+  /**
+   * Private bytes the command's process tree may hold before it is
+   * killed (`tools.shell.memoryLimitMb`); 0 or absent = unguarded. The
+   * guard also kills a tree of 1 GiB or more when the machine runs out
+   * of commit (`src/sandbox/memory-guard.ts`).
+   */
+  memoryLimitBytes?: number;
 }
 
 export interface VerifyProcessExit {
@@ -86,6 +94,10 @@ export interface VerifyProcessExit {
   readonly aborted: boolean;
   /** `spawn` itself failed (ENOENT and friends). */
   readonly spawnError?: string;
+  /** The memory guard killed the tree: over the limit, or the machine was out of commit. */
+  readonly memoryLimitHit?: MemoryGuardReason;
+  /** Largest tree size the guard saw, in bytes, when it sampled at all. */
+  readonly memoryPeakBytes?: number;
 }
 
 export interface VerifyProcess {
@@ -166,6 +178,17 @@ export function spawnVerifyProcess(
     killGroup();
   };
   options.signal?.addEventListener("abort", onAbort, { once: true });
+  let memoryLimitHit: MemoryGuardReason | undefined;
+  const guard =
+    options.memoryLimitBytes !== undefined && options.memoryLimitBytes > 0
+      ? attachMemoryGuard(child.pid, {
+          limitBytes: options.memoryLimitBytes,
+          onExceeded: (reason) => {
+            memoryLimitHit = reason;
+            killGroup();
+          },
+        })
+      : undefined;
 
   const exited = new Promise<VerifyProcessExit>((resolve) => {
     let settled = false;
@@ -174,9 +197,15 @@ export function spawnVerifyProcess(
       settled = true;
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", onAbort);
+      guard?.release();
       // Whatever the command left running in its group dies with it.
       killGroup();
-      resolve(exit);
+      const peak = guard?.peakBytes() ?? 0;
+      resolve({
+        ...exit,
+        ...(memoryLimitHit === undefined ? {} : { memoryLimitHit }),
+        ...(peak > 0 ? { memoryPeakBytes: peak } : {}),
+      });
     };
     child.on("error", (err) => {
       finish({ exitCode: null, signal: null, timedOut, aborted, spawnError: err.message });

@@ -47,6 +47,8 @@ export interface RuntimeToolsConfig {
      * agent's environment; every other one is stripped (ATO-347).
      */
     envPassthrough: string[];
+    /** Memory limit for a command's process tree, in MiB; `0` = unguarded. */
+    memoryLimitMb: number;
   };
   screen: {
     /** Registers `os.screen.*` (macOS only). Mirrors `UserToolsConfig.screen`. */
@@ -92,6 +94,16 @@ export interface UserToolsConfig {
      * Matched without regard to case.
      */
     envPassthrough: string[];
+    /**
+     * Private memory, in MiB, that the process tree of an `os.shell.run`
+     * command or a `verify.run` command may hold before it is killed.
+     * Default 8192. The same guard also kills a tree of 1 GiB or more
+     * when the machine is nearly out of commit (Windows), because model
+     * code that grows without bound otherwise makes every other process
+     * fail too (`src/sandbox/memory-guard.ts`). `0` turns the guard off.
+     * A non-negative integer.
+     */
+    memoryLimitMb: number;
   };
   screen: {
     /**
@@ -132,6 +144,9 @@ export function createToolsDefaults(): UserToolsConfig {
       // operator for that purpose. Provider keys and bot tokens are not
       // here, so a command the model runs never sees them (ATO-347).
       envPassthrough: ["GITHUB_TOKEN", "NOTION_API_KEY"],
+      // 8 GiB: far above a test suite or a build, far below what a
+      // runaway loop reaches before the machine's commit runs out.
+      memoryLimitMb: 8192,
     },
     // Off until the operator asks for it: a model that can click and
     // type anywhere is not a default.
@@ -176,6 +191,10 @@ export function parseToolsConfig(
           "tools.shell.envPassthrough",
         ) ?? []),
       ],
+      memoryLimitMb: parseNonNegativeInt(
+        raw.memoryLimitMb ?? readDefaults().shell.memoryLimitMb,
+        "tools.shell.memoryLimitMb",
+      ),
     },
     screen: {
       enabled: parseBool(

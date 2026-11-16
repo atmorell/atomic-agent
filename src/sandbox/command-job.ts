@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 import { CappedOutput } from "./capped-output.js";
 import { killProcessTree } from "./kill-process-tree.js";
+import { attachMemoryGuard, type MemoryGuardReason } from "./memory-guard.js";
 
 const IS_WINDOWS = process.platform === "win32";
 
@@ -34,13 +35,25 @@ export interface CommandJobOptions {
    * `stdin`). Omitted or empty closes it at once.
    */
   stdin?: string;
+  /**
+   * Private bytes the job's process tree may hold before it is killed
+   * (`tools.shell.memoryLimitMb`); 0 or omitted = unguarded. The guard
+   * also kills a tree of 1 GiB or more when the machine is nearly out of
+   * commit ([memory guard](./memory-guard.ts)).
+   */
+  memoryLimitBytes?: number;
 }
 
 export interface CommandJobExit {
+  /** `null` when the memory guard killed the tree: the kill's own code is not the command's. */
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   /** From the spawn to the close of the child's stdio. */
   durationMs: number;
+  /** The memory guard killed the tree: over the limit, or the machine was out of commit. */
+  memoryLimitHit?: MemoryGuardReason;
+  /** Largest tree size the guard saw, in bytes, when it sampled at all. */
+  memoryPeakBytes?: number;
 }
 
 export interface CommandJobOutput {
@@ -168,20 +181,39 @@ export function startCommandJob(
     if (stopTimer) clearTimeout(stopTimer);
     stopTimer = null;
   };
+  let memoryLimitHit: MemoryGuardReason | undefined;
+  const guard =
+    options.memoryLimitBytes !== undefined && options.memoryLimitBytes > 0
+      ? attachMemoryGuard(child.pid, {
+          limitBytes: options.memoryLimitBytes,
+          onExceeded: (reason) => {
+            memoryLimitHit = reason;
+            clearStop();
+            signalGroup(child, "SIGKILL");
+          },
+        })
+      : undefined;
 
   const exitPromise = new Promise<CommandJobExit>((resolve, reject) => {
     child.on("error", (err) => {
       if (exit || spawnError) return;
       spawnError = err;
       clearStop();
+      guard?.release();
       reject(err);
     });
     child.on("close", (code, signal) => {
       if (exit || spawnError) return;
+      guard?.release();
+      const peak = guard?.peakBytes() ?? 0;
       exit = {
-        exitCode: code,
+        // On Windows `taskkill /F` leaves exit 1, which reads as the
+        // command's own failure; a guard kill has no exit code.
+        exitCode: memoryLimitHit === undefined ? code : null,
         signal,
         durationMs: Date.now() - startedAt,
+        ...(memoryLimitHit === undefined ? {} : { memoryLimitHit }),
+        ...(peak > 0 ? { memoryPeakBytes: peak } : {}),
       };
       clearStop();
       resolve(exit);

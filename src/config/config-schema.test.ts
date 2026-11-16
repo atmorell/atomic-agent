@@ -1655,9 +1655,29 @@ describe("parseUserConfigFile", () => {
         jobMaxMs: 3_600_000,
         maxJobs: 3,
         envPassthrough: ["GITHUB_TOKEN", "NOTION_API_KEY"],
+        memoryLimitMb: 8192,
       },
       screen: { enabled: false, point: true },
     });
+  });
+
+  it("parses tools.shell.memoryLimitMb: default 8192, 0 turns the guard off", () => {
+    expect(USER_CONFIG_DEFAULTS.tools.shell.memoryLimitMb).toBe(8192);
+    for (const value of [0, 4096]) {
+      const parsed = parseUserConfigFile({
+        version: USER_CONFIG_VERSION,
+        tools: { shell: { memoryLimitMb: value } },
+      });
+      expect(parsed.tools.shell.memoryLimitMb).toBe(value);
+    }
+    for (const value of [-1, 1.5, "8G", true]) {
+      expect(() =>
+        parseUserConfigFile({
+          version: USER_CONFIG_VERSION,
+          tools: { shell: { memoryLimitMb: value } },
+        }),
+      ).toThrow(/tools\.shell\.memoryLimitMb/);
+    }
   });
 
   it("parses tools.shell.envPassthrough, defaulting to the skills' tokens only (ATO-347)", () => {
