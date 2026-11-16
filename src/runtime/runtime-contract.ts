@@ -455,6 +455,8 @@ export interface AgentRuntime {
       toolFilter?: (name: string) => boolean;
       /** The turn's tool role (see `RunTurnOptions.toolRole`); a worker is a `builder`. */
       toolRole?: ToolRole;
+      /** See `RunTurnOptions.beforeStep` — a fusion worker waits for its checks. */
+      beforeStep?: (stepIndex: number) => Promise<void>;
       /** See `RunTurnOptions.reasoningEffort` — a fusion worker's setting. */
       reasoningEffort?: ReasoningEffort;
       /** See `RunTurnOptions.maxOutputTokens` — a fusion worker's cap. */
@@ -521,6 +523,8 @@ export interface AgentRuntime {
       taskMaxCostUsd?: number;
       toolFilter?: (name: string) => boolean;
       toolRole?: ToolRole;
+      /** See `runTurn`'s `beforeStep`. */
+      beforeStep?: (stepIndex: number) => Promise<void>;
       reasoningEffort?: ReasoningEffort;
       maxOutputTokens?: number;
       /** See `runTurn`'s `interactive`. */

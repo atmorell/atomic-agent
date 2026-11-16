@@ -323,6 +323,44 @@ describe("AgentLoop mid-turn steering", () => {
     expect(result.undelivered).toEqual([]);
   });
 
+  // k8z: a fusion worker's checks run between two steps; the result is
+  // pushed while `beforeStep` waits and must reach that very step.
+  it("folds a message pushed while beforeStep waits into that same step", async () => {
+    const inbox = new SteeringInbox();
+    const waited: number[] = [];
+    const { loop, tails, events } = buildLoop({ inbox, steps: 3 });
+    await loop.runTurn(createEmptySessionState({ id: "s-before", workingDir }), {
+      userMessage: "go",
+      maxSteps: 4,
+      signal: new AbortController().signal,
+      beforeStep: async (stepIndex) => {
+        waited.push(stepIndex);
+        if (stepIndex !== 1) return;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inbox.push("s-before", "2 of 3 checks failed");
+      },
+    });
+    expect(waited).toEqual([0, 1, 2]);
+    expect(tails[0]).not.toContain("2 of 3 checks failed");
+    expect(tails[1]).toContain("### notice");
+    expect(tails[1]).toContain("2 of 3 checks failed");
+    expect(events).toContainEqual({ type: "steer_applied", text: "2 of 3 checks failed", stepIndex: 1 });
+  });
+
+  it("goes on with the step when beforeStep throws", async () => {
+    const { loop, tails } = buildLoop({ inbox: new SteeringInbox() });
+    const result = await loop.runTurn(createEmptySessionState({ id: "s-throw", workingDir }), {
+      userMessage: "go",
+      maxSteps: 4,
+      signal: new AbortController().signal,
+      beforeStep: async () => {
+        throw new Error("check runner broke");
+      },
+    });
+    expect(result.reason).toBe("reply");
+    expect(tails).toHaveLength(2);
+  });
+
   it("behaves exactly as before when no inbox is wired in", async () => {
     const { loop, tails } = buildLoop({});
     const result = await loop.runTurn(

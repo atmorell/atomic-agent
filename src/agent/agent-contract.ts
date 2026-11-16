@@ -628,6 +628,15 @@ export interface RunTurnOptions {
    */
   toolRole?: ToolRole;
   /**
+   * Awaited at each step boundary before the steering inbox is drained,
+   * so a note pushed while it runs joins that same step. A fusion
+   * worker holds its next step until the runtime's run of its task's
+   * checks after a change has steered the result (worker-runner.ts).
+   * The hook bounds its own wait; one that throws is logged and the
+   * step goes on. Not counted in the step's duration.
+   */
+  beforeStep?: (stepIndex: number) => Promise<void>;
+  /**
    * What the turn does when the managed local model runs out of memory
    * (ATO-334): `ask` the person first (a chat they are watching), or
    * restart it with a smaller window on its own (`auto`, the default: a

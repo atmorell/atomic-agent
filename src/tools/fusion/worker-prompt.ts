@@ -259,6 +259,63 @@ export function formatRewriteSteer(path: string): string {
 }
 
 /**
+ * Measured (k8x, 16-11-2026): the core worker turned its brief's "run
+ * these checks first: (a)…(f)" into one step of 16 `os.shell.run` calls
+ * — 145 s of local generation, four of them failing — and after its last
+ * green run read its own files six times (73 s) before replying. The
+ * task's contract checks are already exact commands: `worker-runner.ts`
+ * runs them after each step that changed a file and steers the result in
+ * before the next step. Rendered only when that is wired.
+ */
+export const CHECKS_RUN_BY_RUNTIME_RULE =
+  "- The runtime runs your task's CHECKS itself after every step that changes a file (once all your FILES exist) and tells you the result before your next step. Do not write or run your own copies of them; run only a case your task names that no check covers.";
+
+const CHECK_STEER_SPEC_CHARS = 140;
+const CHECK_STEER_MAX_FAILURES = 3;
+
+/** A check as a person would type it: `cmd args…`, else its JSON, clipped. */
+function describeCheckSpec(check: Readonly<Record<string, unknown>>): string {
+  const { task: _task, ...spec } = check;
+  const cmd = typeof spec.cmd === "string" ? spec.cmd : undefined;
+  const args = Array.isArray(spec.args)
+    ? spec.args.filter((arg): arg is string => typeof arg === "string")
+    : [];
+  const text = cmd === undefined ? JSON.stringify(spec) : [cmd, ...args].join(" ");
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > CHECK_STEER_SPEC_CHARS
+    ? `${flat.slice(0, CHECK_STEER_SPEC_CHARS)}…`
+    : flat;
+}
+
+/**
+ * The steer carrying the runtime's run of a worker's own checks after a
+ * change: the first failures with their output, or that all passed.
+ * `outcomes` are index-aligned with `checks` (`runContractChecks`).
+ */
+export function formatCheckResultSteer(
+  checks: readonly Readonly<Record<string, unknown>>[],
+  outcomes: readonly { ok: boolean; detail: string }[],
+): string {
+  const total = outcomes.length;
+  const failed = outcomes
+    .map((outcome, i) => ({ outcome, check: checks[i] ?? {} }))
+    .filter(({ outcome }) => !outcome.ok);
+  if (failed.length === 0) {
+    return `The runtime ran your task's ${total} check${total === 1 ? "" : "s"} after your last change: all passed. If every part of your task is written, reply now — do not read your files again or re-run the checks. Run only a case your task names that no check covers.`;
+  }
+  const shown = failed
+    .slice(0, CHECK_STEER_MAX_FAILURES)
+    .map(({ outcome, check }) => `- \`${describeCheckSpec(check)}\`: ${outcome.detail}`);
+  const more = failed.length - shown.length;
+  return [
+    `The runtime ran your task's checks after your last change: ${failed.length} of ${total} failed.`,
+    ...shown,
+    ...(more > 0 ? [`- +${more} more failing`] : []),
+    `Fix the first failure with \`os.fs.edit\`; the runtime runs the checks again after your next change, so do not run them yourself.`,
+  ].join("\n");
+}
+
+/**
  * Measured (k8d, 16-11-2026): both local workers of a fan-out into an
  * empty folder spent their first step on `os.fs.list` of it, and the
  * core worker — the task that set the pace — listed it again in its
@@ -290,6 +347,8 @@ export function renderWorkerBrief(
     contract?: DelegateContract;
     /** The working directory's top level at dispatch, `.git` left out; undefined renders nothing. */
     startEntries?: readonly string[];
+    /** The runtime runs this task's own checks after each change (`CHECKS_RUN_BY_RUNTIME_RULE`). */
+    checksRunAfterChange?: boolean;
   },
 ): string {
   const request = options.originalRequest?.trim() ?? "";
@@ -321,6 +380,7 @@ export function renderWorkerBrief(
     EDIT_NOT_REWRITE_RULE,
     STDIN_SELF_TEST_RULE,
     RUN_BEFORE_REREAD_RULE,
+    ...(options.checksRunAfterChange === true ? [CHECKS_RUN_BY_RUNTIME_RULE] : []),
     SLOW_PASS_RULE,
     NAMED_CASES_RULE,
     BROWSER_CODE_RULE,

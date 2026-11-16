@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import type { AgentLoopEvent, RunTurnResult } from "../../agent/agent-contract.js";
 import type { ReasoningEffort } from "../../llm/provider/completion-types.js";
 import type { ApprovalGate } from "../../approval/approval-gate.js";
@@ -7,6 +7,11 @@ import type { FusionWorkerMeta } from "../../session/fusion-worker-session.js";
 import type { TurnOrigin } from "../../runtime/turn-controller.js";
 import type { DelegateTask } from "./delegate-args.js";
 import type { DelegateContract } from "./contract.js";
+import {
+  NO_RESULT_DETAIL,
+  runContractChecks,
+  type ContractCheckRunner,
+} from "./contract-checks.js";
 import type { CompletionUsage } from "../../llm/provider/completion-types.js";
 import type { FusionEscalationTarget } from "../../llm/run-mode/index.js";
 import { estimateUsageCostUsd } from "../../llm/provider/usage-cost.js";
@@ -34,6 +39,7 @@ import {
 } from "./declared-files.js";
 import type { DeclaredInputsRegistry } from "../os/fs/fs-declared-inputs.js";
 import {
+  formatCheckResultSteer,
   formatRewriteSteer,
   formatRunBeforeRereadSteer,
   formatRunFirstSteer,
@@ -349,6 +355,27 @@ function pathKey(path: string): string {
 }
 
 /**
+ * The longest one run of a worker's own checks after a change may take
+ * (`checkAfterChange`): a check still running then is reported as not
+ * finished — on a few thousand items that is a slow pass, a defect.
+ */
+export const CHECK_AFTER_CHANGE_TIMEOUT_MS = 45_000;
+
+/** How long `beforeStep` holds the next step for that run, at most. */
+const CHECK_AFTER_CHANGE_WAIT_MS = CHECK_AFTER_CHANGE_TIMEOUT_MS + 5_000;
+
+/** Every declared file is on disk; a path that cannot be resolved counts as missing. */
+function allFilesExist(files: readonly string[], workingDir: string): boolean {
+  return files.every((file) => {
+    try {
+      return existsSync(resolveUserPath(file, workingDir));
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
  * How many steps must have COMPLETED, none of them a successful write,
  * before a task with declared files can be handed back early (F42).
  *
@@ -462,6 +489,7 @@ export interface WorkerRunnerDeps {
       taskMaxDurationMs?: number;
       toolFilter?: (name: string) => boolean;
       toolRole?: ToolRole;
+      beforeStep?: (stepIndex: number) => Promise<void>;
       reasoningEffort?: ReasoningEffort;
       maxOutputTokens?: number;
       signal?: AbortSignal;
@@ -531,6 +559,14 @@ export interface WorkerRunnerDeps {
   escalationComplete?: EscalationComplete;
   /** `runtime.steer`: how an advisor's hint reaches a running worker. */
   steerWorker?: (sessionId: string, text: string) => boolean;
+  /**
+   * The verify family's `runChecks`, the same runner the contract's
+   * checks use after the fan-out. With `steerWorker` set, a worker whose
+   * task owns checks has them run after each step that changed a file
+   * (once all its FILES exist) and is steered with the result before its
+   * next step (k8z). Absent, the checks run only after the fan-out.
+   */
+  runChecks?: ContractCheckRunner;
   /** Where running workers are registered for the person's stop / escalate. */
   liveWorkers?: FusionLiveWorkers;
   /**
@@ -1074,14 +1110,26 @@ async function runOneTask(
 
   const suffix = options.briefSuffix?.(task.id);
   const startEntries = listStartEntries(workingDir);
-  const brief = `${renderWorkerBrief(task, {
-    workingDir,
-    ...(startEntries === undefined ? {} : { startEntries }),
-    ...(options.originalRequest === undefined
-      ? {}
-      : { originalRequest: options.originalRequest }),
-    ...(options.contract === undefined ? {} : { contract: options.contract }),
-  })}${suffix === undefined ? "" : `\n\n${suffix}`}`;
+  // The task's own contract checks, run by the runtime after each change
+  // (`checkAfterChange` below, k8z) when both seams are wired.
+  const ownChecks = (options.contract?.checks ?? []).filter(
+    (check) => check.task === task.id,
+  );
+  const checksAfterChange =
+    ownChecks.length > 0 &&
+    deps.runChecks !== undefined &&
+    deps.steerWorker !== undefined;
+  const renderBrief = (checksRunAfterChange: boolean): string =>
+    `${renderWorkerBrief(task, {
+      workingDir,
+      ...(startEntries === undefined ? {} : { startEntries }),
+      ...(options.originalRequest === undefined
+        ? {}
+        : { originalRequest: options.originalRequest }),
+      ...(options.contract === undefined ? {} : { contract: options.contract }),
+      ...(checksRunAfterChange ? { checksRunAfterChange } : {}),
+    })}${suffix === undefined ? "" : `\n\n${suffix}`}`;
+  const brief = renderBrief(checksAfterChange);
   const declaredFiles = task.files?.length ?? 0;
   // Per-task budgets the orchestrator sized itself, clamped into what
   // this install allows. A task that asked for nothing keeps the
@@ -1348,6 +1396,68 @@ async function runOneTask(
       ...(sinceWrite ? {} : { ranNothing: true }),
       steered: rereadSteered,
     });
+  };
+  // The task's own checks after a change (k8z): after each step that
+  // changed a file, once every declared file exists, the runtime runs
+  // them and steers the result in; `beforeStep` holds the next step until
+  // it is there. Measured (k8x): the worker wrote and ran its own copies
+  // of them, 16 `os.shell.run` calls in one step, 145 s of generation.
+  let changedSinceCheck = false;
+  let pendingCheck: Promise<void> | undefined;
+  let lastCheckSteer: string | undefined;
+  const checkAfterChange = (signal: AbortSignal): void => {
+    if (!checksAfterChange || !changedSinceCheck || pendingCheck !== undefined) return;
+    if (!allFilesExist(task.files ?? [], workingDir)) return;
+    changedSinceCheck = false;
+    const checkStarted = Date.now();
+    const timeLimit = AbortSignal.timeout(CHECK_AFTER_CHANGE_TIMEOUT_MS);
+    pendingCheck = (async () => {
+      const run = await runContractChecks(ownChecks, deps.runChecks, {
+        workingDir,
+        signal: AbortSignal.any([signal, timeLimit]),
+      });
+      if (signal.aborted) return;
+      if (run.outcomes.length === 0) {
+        deps.logger?.info("fusion: worker's checks not run after a change", {
+          taskId: task.id,
+          reason: run.checksSkipped ?? "no outcome",
+        });
+        return;
+      }
+      // The runtime ran the worker's code: reading it now is not a
+      // re-read of code nobody ran (`checkRunBeforeReread`).
+      notRunSinceWrite.clear();
+      ranAnything = true;
+      const outcomes = timeLimit.aborted
+        ? run.outcomes.map((outcome) =>
+            outcome.ok || outcome.detail !== NO_RESULT_DETAIL
+              ? outcome
+              : {
+                  ...outcome,
+                  detail: `did not finish within ${CHECK_AFTER_CHANGE_TIMEOUT_MS / 1000} s — the code may redo work for every item`,
+                },
+          )
+        : run.outcomes;
+      const failed = outcomes.filter((outcome) => !outcome.ok).length;
+      const text = formatCheckResultSteer(ownChecks, outcomes);
+      // An unchanged all-green result says nothing new.
+      if (failed === 0 && text === lastCheckSteer) return;
+      lastCheckSteer = text;
+      const steered = deps.steerWorker?.(session.id, text) ?? false;
+      deps.logger?.info("fusion: worker steered with its checks' result", {
+        taskId: task.id,
+        checks: outcomes.length,
+        failed,
+        ms: Date.now() - checkStarted,
+        steered,
+      });
+    })()
+      .catch(() => {
+        // A check never takes the worker down.
+      })
+      .finally(() => {
+        pendingCheck = undefined;
+      });
   };
   const maybeHandBack = (): void => {
     if (declaredFiles === 0 || wroteSomething || handBack.signal.aborted)
@@ -1662,6 +1772,38 @@ async function runOneTask(
   );
 
   let result: WorkerTaskResult;
+  const turnSignal = AbortSignal.any([
+    options.signal,
+    timeLimit,
+    handBack.signal,
+    stopByPerson.signal,
+    replaceAbort.signal,
+  ]);
+  // Ends a run of the checks still going when the turn is over: the
+  // fan-out runs them all again afterwards anyway.
+  const checksDone = new AbortController();
+  const checkSignal = AbortSignal.any([turnSignal, checksDone.signal]);
+  const waitForCheck = async (): Promise<void> => {
+    const pending = pendingCheck;
+    if (pending === undefined || checkSignal.aborted) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      await Promise.race([
+        pending,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, CHECK_AFTER_CHANGE_WAIT_MS);
+        }),
+        new Promise<void>((resolve) => {
+          onAbort = () => resolve();
+          checkSignal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (onAbort !== undefined) checkSignal.removeEventListener("abort", onAbort);
+    }
+  };
   try {
     const turn = await deps.runTurn(session, brief, {
       origin: "fusion",
@@ -1674,13 +1816,8 @@ async function runOneTask(
         ? {}
         : { reasoningEffort: options.workerReasoning }),
       ...(replyCap === undefined ? {} : { maxOutputTokens: replyCap }),
-      signal: AbortSignal.any([
-        options.signal,
-        timeLimit,
-        handBack.signal,
-        stopByPerson.signal,
-        replaceAbort.signal,
-      ]),
+      ...(checksAfterChange ? { beforeStep: waitForCheck } : {}),
+      signal: turnSignal,
       eventHook: (event) => {
         // The first token — not `turn_started`, which fires before the
         // request is even sent — is what ends the queue wait.
@@ -1786,6 +1923,7 @@ async function runOneTask(
           if (result.status === "ok" && WRITE_TOOLS.has(result.tool)) {
             wroteSomething = true;
             wroteThisStep = true;
+            changedSinceCheck = true;
             try {
               checkRewrite(result.tool, result.details);
             } catch {
@@ -1819,6 +1957,14 @@ async function runOneTask(
           wroteThisStep = false;
           try {
             checkRequestNames();
+          } catch {
+            // A check never takes the worker down.
+          }
+        }
+        // Started here, awaited by `beforeStep` before the next step.
+        if (event.type === "step_finished") {
+          try {
+            checkAfterChange(checkSignal);
           } catch {
             // A check never takes the worker down.
           }
@@ -1872,6 +2018,7 @@ async function runOneTask(
     });
   } finally {
     settled = true;
+    checksDone.abort();
     unregisterLive?.();
     clearTimeout(queueTimer);
     if (wallTimer !== undefined) clearTimeout(wallTimer);
@@ -1951,7 +2098,8 @@ async function runOneTask(
     try {
       const turn = await deps.runTurn(
         replaceSession,
-        `${brief}\n\n## Already tried\nA local worker worked on this task first and stayed stuck after advice. What it found: ${localFindings}`,
+        // Without the checks rule: nothing runs them for the re-run.
+        `${renderBrief(false)}\n\n## Already tried\nA local worker worked on this task first and stayed stuck after advice. What it found: ${localFindings}`,
         {
           origin: "fusion",
           providerId: target.providerId,

@@ -280,6 +280,9 @@ export function applyContractFindings(
   });
 }
 
+/** A check the runner returned nothing for (it stopped early, e.g. on an abort). */
+export const NO_RESULT_DETAIL = "the runner returned no result";
+
 function head(text: string, cap: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > cap ? `${flat.slice(0, cap)}…` : flat;
@@ -320,7 +323,7 @@ export async function runContractChecks(
     const result = results[i];
     const task = check.task === undefined ? {} : { task: check.task };
     if (result === undefined) {
-      return { ...task, ok: false, detail: "the runner returned no result" };
+      return { ...task, ok: false, detail: NO_RESULT_DETAIL };
     }
     const detail = head(
       result.error ?? result.summary ?? (result.ok ? "passed" : "failed"),

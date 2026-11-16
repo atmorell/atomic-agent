@@ -299,6 +299,17 @@ export class AgentLoop {
           await this.deps.profileManager.refreshIfStale();
         }
       }
+      if (options.beforeStep) {
+        try {
+          await options.beforeStep(i);
+        } catch (error) {
+          this.deps.logger?.warn("beforeStep hook failed; the step goes on", {
+            sessionId: state.id,
+            stepIndex: i,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       this.deps.onEvent?.({ type: "step_started", stepIndex: i });
       const started = Date.now();
       // Mid-turn steering: anything the user sent since the previous

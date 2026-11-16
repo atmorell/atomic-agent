@@ -135,6 +135,7 @@ export function createRuntimeTurnService(
     taskMaxCostUsd?: number;
     toolFilter?: (name: string) => boolean;
     toolRole?: ToolRole;
+    beforeStep?: (stepIndex: number) => Promise<void>;
     reasoningEffort?: ReasoningEffort;
     maxOutputTokens?: number;
     interactive?: boolean;
@@ -170,6 +171,9 @@ export function createRuntimeTurnService(
     ...(runOptions.toolRole === undefined
       ? {}
       : { toolRole: runOptions.toolRole }),
+    ...(runOptions.beforeStep === undefined
+      ? {}
+      : { beforeStep: runOptions.beforeStep }),
     signal: runOptions.signal ?? new AbortController().signal,
   });
 
@@ -356,6 +360,7 @@ export function createRuntimeTurnService(
       taskMaxCostUsd?: number;
       toolFilter?: (name: string) => boolean;
       toolRole?: ToolRole;
+      beforeStep?: (stepIndex: number) => Promise<void>;
       reasoningEffort?: ReasoningEffort;
       maxOutputTokens?: number;
       interactive?: boolean;
@@ -628,6 +633,7 @@ export function createRuntimeTurnService(
       taskMaxCostUsd?: number;
       toolFilter?: (name: string) => boolean;
       toolRole?: ToolRole;
+      beforeStep?: (stepIndex: number) => Promise<void>;
       reasoningEffort?: ReasoningEffort;
       maxOutputTokens?: number;
       interactive?: boolean;
