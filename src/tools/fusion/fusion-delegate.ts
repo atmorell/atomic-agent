@@ -665,16 +665,17 @@ export function buildFusionDelegateTool(
         : null;
       // The reply cap the local pool was divided by (`workerSlotFootprint`
       // sizes each worker's reply at `workerReplyAllowance`, not at the raw
-      // `completionMaxTokens`). A cap above that allowance is sent as the
-      // workers' own, so no worker can write past its share of the shared
-      // context; an operator's `workerMaxOutputTokens` still wins, a cap
-      // at or below the allowance changes nothing, and a cloud leg (no
-      // pool, `poolSize` infinite) is never capped here.
+      // `completionMaxTokens`). It is always sent as the local workers' own,
+      // so no worker can write past its share of the shared context. Sent
+      // only above the allowance, a worker at the default cap carried none,
+      // and the thinking lift (ATO-1031) ran it at 32,768: one step of
+      // opgave 8 (k8ab) generated 21,115 tokens and ran into the run's
+      // limit. An operator's `workerMaxOutputTokens` still wins, and a
+      // cloud leg (no pool, `poolSize` infinite) is never capped here.
       const localReplyCap = getConfig().localModels.completionMaxTokens;
       const workerMaxOutputTokens =
         mode.workerMaxOutputTokens ??
-        (Number.isFinite(poolSize) &&
-        localReplyCap > workerReplyAllowance(localReplyCap)
+        (Number.isFinite(poolSize)
           ? workerReplyAllowance(localReplyCap)
           : undefined);
 

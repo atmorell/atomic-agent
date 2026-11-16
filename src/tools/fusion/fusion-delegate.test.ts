@@ -542,6 +542,8 @@ describe("fusion.delegate", () => {
     const seen: Array<Record<string, unknown>> = [];
     const tool = buildFusionDelegateTool(
       deps({
+        // A cloud leg: no local pool, so no pool share is sent as a cap.
+        workerSupportsSlotAffinity: () => false,
         runTurn: async (_session, _message, options) => {
           seen.push({ ...options });
           return turnResult();
@@ -557,30 +559,36 @@ describe("fusion.delegate", () => {
 
   /**
    * The local pool is divided by `workerReplyAllowance` (16 384), not by
-   * the raw `completionMaxTokens`. A cap raised past it (96k for long
-   * single-stream runs) is sent as the local workers' own, so no worker
-   * writes past its share of the shared context; a cloud leg has no pool
-   * and is not capped.
+   * the raw `completionMaxTokens`. That allowance is always sent as the
+   * local workers' own cap, so no worker writes past its share of the
+   * shared context: a cap raised past it (96k for long single-stream runs)
+   * is cut to it, and at the default cap it stops the thinking lift
+   * (32 768) that let one k8ab step decode 21 115 tokens. A cloud leg has
+   * no pool and is not capped.
    */
   it("caps local workers at the reply allowance the pool was sized for", async () => {
     const before = process.env.ATOMIC_AGENT_LLAMA_MAX_TOKENS;
-    process.env.ATOMIC_AGENT_LLAMA_MAX_TOKENS = "96000";
-    resetConfigCache();
+    const seen: Array<Record<string, unknown>> = [];
+    const run = async (over: Partial<FusionDelegateDeps>) => {
+      seen.length = 0;
+      await buildFusionDelegateTool(
+        deps({
+          runTurn: async (_session, _message, options) => {
+            seen.push({ ...options });
+            return turnResult();
+          },
+          ...over,
+        }),
+      ).run({ tasks: TASKS }, ctx());
+      return seen[0];
+    };
     try {
-      const seen: Array<Record<string, unknown>> = [];
-      const run = async (over: Partial<FusionDelegateDeps>) => {
-        seen.length = 0;
-        await buildFusionDelegateTool(
-          deps({
-            runTurn: async (_session, _message, options) => {
-              seen.push({ ...options });
-              return turnResult();
-            },
-            ...over,
-          }),
-        ).run({ tasks: TASKS }, ctx());
-        return seen[0];
-      };
+      // Default config: the cap equals the allowance and is still sent.
+      delete process.env.ATOMIC_AGENT_LLAMA_MAX_TOKENS;
+      resetConfigCache();
+      expect(await run({})).toMatchObject({ maxOutputTokens: 16_384 });
+      process.env.ATOMIC_AGENT_LLAMA_MAX_TOKENS = "96000";
+      resetConfigCache();
       expect(await run({})).toMatchObject({ maxOutputTokens: 16_384 });
       expect(
         await run({ workerSupportsSlotAffinity: () => false }),
