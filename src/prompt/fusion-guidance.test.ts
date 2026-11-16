@@ -126,7 +126,7 @@ describe("the ### fusion prefix section", () => {
     // read the fact and merged anyway. The restore is a worker's call,
     // because the orchestrator's own writes are refused.
     expect(FUSION_GUIDANCE).toContain(
-      "A task that replaced a pre-existing file is not done until the file is restored (`os.fs.restore` in a worker) or the replacement was asked for.",
+      "A task that replaced an existing file is not done until the file is restored (`os.fs.restore` in a worker) or the replacement was asked for.",
     );
   });
 
@@ -274,7 +274,7 @@ describe("the machine facts in the ### fusion block", () => {
     // k8i: the judge sent io back once (~100 s) over `str(r)` giving
     // '1e-06' where the brief described six decimals in words.
     expect(FUSION_GUIDANCE).toContain(
-      "Give the trickiest part 4-6 input -> expected examples the worker runs first.",
+      "Give the trickiest part 4-6 input -> expected examples to run first, one full-size with a time limit.",
     );
   });
 });

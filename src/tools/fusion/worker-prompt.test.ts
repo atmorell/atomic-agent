@@ -17,6 +17,7 @@ import {
   renderStartListing,
   renderWorkerBrief,
   RUN_BEFORE_REREAD_RULE,
+  SLOW_PASS_RULE,
   formatRunBeforeRereadSteer,
   siblingFilesRule,
   START_LISTING_LIMIT,
@@ -169,6 +170,17 @@ describe("renderWorkerBrief — siblings and browser code (ATO-919)", () => {
     expect(RUN_BEFORE_REREAD_RULE).toMatch(/run it once/);
     expect(formatRunBeforeRereadSteer("/w/formel.py")).toContain("/w/formel.py");
     expect(formatRunBeforeRereadSteer("/w/formel.py")).toContain("`stdin`");
+  });
+
+  it("tells the worker a slow pass has not passed (k8k)", () => {
+    // k8k: the self-test printed a 2574-cell chain at 55.88 s and the
+    // worker replied done; every change recomputed the whole sheet.
+    const brief = renderWorkerBrief(TASK, { workingDir: "/repo" });
+    const at = brief.indexOf(SLOW_PASS_RULE);
+    expect(at).toBeGreaterThan(brief.indexOf(RUN_BEFORE_REREAD_RULE));
+    expect(at).toBeLessThan(brief.indexOf("- Finish with `reply`"));
+    expect(SLOW_PASS_RULE).toMatch(/has not passed/);
+    expect(SLOW_PASS_RULE).toContain("`os.fs.edit`");
   });
 });
 

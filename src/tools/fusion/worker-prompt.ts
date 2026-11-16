@@ -217,6 +217,15 @@ export const STDIN_SELF_TEST_RULE =
 export const RUN_BEFORE_REREAD_RULE =
   "- After writing a module, run it once (a short `stdin` script that imports it and calls it) before you read it again: reading back what you just wrote shows what you meant, a run shows what it does.";
 
+/**
+ * Measured (k8k, 16-11-2026): the core worker's own stdin self-test
+ * printed "chain of 2574, ... 55.88s" and the worker replied done. Every
+ * `saet` recomputed the whole sheet (O(n^2)); the facit suite went from
+ * 3.6 s to 58.5 s and the judge passed it. A slow pass is a defect.
+ */
+export const SLOW_PASS_RULE =
+  "- A run that passes but takes more than a few seconds on a few thousand items has not passed: find the work redone for every item (such as recomputing everything on each change) and fix it with `os.fs.edit` before you reply.";
+
 /** The one steer sent when a worker reads a module it has not run since writing it. */
 export function formatRunBeforeRereadSteer(path: string): string {
   return `You are reading ${path} again without having run it since you wrote it. Run it first: one \`os.shell.run\` with a short script on \`stdin\` that imports it and calls the part in doubt. Then read only the lines the error names.`;
@@ -290,6 +299,7 @@ export function renderWorkerBrief(
     EDIT_NOT_REWRITE_RULE,
     STDIN_SELF_TEST_RULE,
     RUN_BEFORE_REREAD_RULE,
+    SLOW_PASS_RULE,
     BROWSER_CODE_RULE,
     ...(request.length > 0 ? [EXACT_SPELLING_RULE] : []),
     `- Finish with \`reply\` carrying the concise result of this task (about ${WORKER_REPLY_CHAR_BUDGET} characters at most). That reply is the ONLY thing the orchestrator receives — findings, file paths, decisions and anything it needs to merge your part must be inside it.`,
