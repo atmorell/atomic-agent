@@ -8,7 +8,9 @@ import {
 import { parseDelegateArgs } from "./delegate-args.js";
 import {
   BROWSER_CODE_RULE,
+  EDIT_NOT_REWRITE_RULE,
   EXACT_SPELLING_RULE,
+  formatRewriteSteer,
   FOLLOW_UP_MAX_CHARS,
   ORIGINAL_REQUEST_CHAR_BUDGET,
   pickOriginalRequest,
@@ -127,6 +129,18 @@ describe("renderWorkerBrief — siblings and browser code (ATO-919)", () => {
     expect(brief.indexOf(BROWSER_CODE_RULE)).toBeGreaterThan(rulesAt);
     expect(brief.indexOf(BROWSER_CODE_RULE)).toBeLessThan(replyAt);
     expect(brief.indexOf(siblingFilesRule(false))).toBeGreaterThan(rulesAt);
+  });
+
+  it("tells the worker to edit a file it wrote, never rewrite it whole (k8b)", () => {
+    // k8b: two whole-file rewrites were ~200 s of the 490 s task that
+    // set the fan-out's pace.
+    const brief = renderWorkerBrief(TASK, { workingDir: "/repo" });
+    const at = brief.indexOf(EDIT_NOT_REWRITE_RULE);
+    expect(at).toBeGreaterThan(brief.indexOf("RULES:"));
+    expect(at).toBeLessThan(brief.indexOf("- Finish with `reply`"));
+    expect(EDIT_NOT_REWRITE_RULE).toContain("`os.fs.edit`");
+    expect(EDIT_NOT_REWRITE_RULE).toMatch(/never by writing it whole again/);
+    expect(formatRewriteSteer("/w/a.py")).toContain("/w/a.py");
   });
 });
 

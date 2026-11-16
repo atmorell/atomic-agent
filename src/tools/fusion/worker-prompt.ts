@@ -187,6 +187,21 @@ export const BROWSER_CODE_RULE =
 export const EXACT_SPELLING_RULE =
   "- Spell every name, key, command and output string the original request or your task fixes exactly as written there, letter for letter — also where it looks misspelled or is written without special letters (e.g. `oe` for `ø`, `ue` for `ü`). It is deliberate, and the checks compare exact text: never correct, translate or re-accent it, in the code or in your tests.";
 
+/**
+ * Measured (k8b, 16-11-2026): the core worker of a six-file package
+ * wrote four files six times — two whole-file rewrites, about 10K
+ * tokens or 200 s of a 490 s task on a 2-slot GPU, the task that set the
+ * fan-out's pace. Its five `os.fs.edit` calls cost a few hundred tokens
+ * each. `worker-runner.ts` steers once on the first rewrite as well.
+ */
+export const EDIT_NOT_REWRITE_RULE =
+  "- Change a file you already wrote in this task with `os.fs.edit`, never by writing it whole again: every line written again costs minutes of local generation.";
+
+/** The one steer sent when a worker rewrites a file it wrote itself. */
+export function formatRewriteSteer(path: string): string {
+  return `You just wrote ${path} whole again although you had already written it in this task. For every further change to a file you wrote, use \`os.fs.edit\` with only the lines that change — a whole-file rewrite costs minutes here.`;
+}
+
 export function renderWorkerBrief(
   task: DelegateTask,
   options: {
@@ -219,6 +234,7 @@ export function renderWorkerBrief(
     `- The operator authorised this fan-out to write files AND run commands in the directories the task names, so working there needs no permission: write the files, run the build, run the tests, read the output. Anything outside them is refused, not queued: a tool result carrying "${FUSION_WORKER_APPROVAL_MARKER}" means nobody can approve it here. Stop retrying it and say in your reply exactly what was blocked and where, so the orchestrator can re-send the task with that path named — it cannot run the action for you. If the refusal also says "${FUSION_WORKER_OPERATOR_ONLY_MARKER}" (a dangerous command, the agent's own config or secret files, a mail, a password or a payment), re-sending will not help: do not try another way to do the same thing, just name the exact command or file in your reply as something only the user can run or approve.`,
     `- Read files only inside ${options.workingDir} and the directories this task writes in; a read anywhere else is refused. Do not search other projects for context — ${request.length > 0 ? "your task, its FILES and the original request are" : "your task and its FILES are"} the context you have.`,
     siblingFilesRule(options.contract !== undefined),
+    EDIT_NOT_REWRITE_RULE,
     BROWSER_CODE_RULE,
     ...(request.length > 0 ? [EXACT_SPELLING_RULE] : []),
     `- Finish with \`reply\` carrying the concise result of this task (about ${WORKER_REPLY_CHAR_BUDGET} characters at most). That reply is the ONLY thing the orchestrator receives — findings, file paths, decisions and anything it needs to merge your part must be inside it.`,

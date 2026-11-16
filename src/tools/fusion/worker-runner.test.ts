@@ -1939,3 +1939,68 @@ describe("runWorkerTasks — the request's names", () => {
       expect(steers).toEqual([]);
     }));
 });
+
+describe("runWorkerTasks — a rewrite of the worker's own file (k8b)", () => {
+  type TurnOptions = Parameters<WorkerRunnerDeps["runTurn"]>[2];
+
+  // One step per call, in order: `[tool, path]`.
+  function calls(sequence: ReadonlyArray<readonly [string, string]>) {
+    return async ({ options }: { options: TurnOptions }) => {
+      sequence.forEach(([tool, path], step) => {
+        options.eventHook?.({ type: "step_started", stepIndex: step });
+        options.eventHook?.({
+          type: "llm_event",
+          event: {
+            type: "tool_call_executed",
+            result: { tool, status: "ok", summary: "done", details: { path }, truncated: false },
+            batchIndex: 0,
+            batchSize: 1,
+          },
+        });
+        options.eventHook?.({ type: "step_finished", stepIndex: step, summary: "step done", durationMs: 1 });
+      });
+      return turnResult({ stepCount: sequence.length + 1 });
+    };
+  }
+
+  async function steersFor(sequence: ReadonlyArray<readonly [string, string]>): Promise<string[]> {
+    const steers: string[] = [];
+    const { deps } = harness(calls(sequence));
+    deps.steerWorker = (_id, text) => {
+      steers.push(text);
+      return true;
+    };
+    await runWorkerTasks(deps, {
+      ...BASE,
+      tasks: tasks(1),
+      maxWorkers: 1,
+      signal: new AbortController().signal,
+    });
+    return steers;
+  }
+
+  it("steers once toward os.fs.edit when the worker writes its own file whole again", async () => {
+    // k8b: four files written six times, ~200 s of the task that set
+    // the fan-out's pace. The second rewrite is not steered again.
+    const steers = await steersFor([
+      ["os.fs.write", "/w/formel.py"],
+      ["os.fs.write", "/w/ark.py"],
+      ["os.fs.write", "/w/formel.py"],
+      ["os.fs.write", "/w/ark.py"],
+    ]);
+    expect(steers).toHaveLength(1);
+    expect(steers[0]).toContain("/w/formel.py");
+    expect(steers[0]).toContain("`os.fs.edit`");
+  });
+
+  it("does not steer an edit, a new file, or a write after an edit of another file", async () => {
+    expect(
+      await steersFor([
+        ["os.fs.write", "/w/formel.py"],
+        ["os.fs.edit", "/w/formel.py"],
+        ["os.fs.write", "/w/ark.py"],
+        ["os.fs.edit", "/w/ark.py"],
+      ]),
+    ).toEqual([]);
+  });
+});

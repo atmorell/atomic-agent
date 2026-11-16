@@ -31,6 +31,7 @@ import {
 } from "./declared-files.js";
 import type { DeclaredInputsRegistry } from "../os/fs/fs-declared-inputs.js";
 import {
+  formatRewriteSteer,
   renderWorkerBrief,
   WORKER_REPLY_CHAR_BUDGET,
 } from "./worker-prompt.js";
@@ -43,6 +44,7 @@ import {
   unservedWorkerHint,
   type SlotOccupancy,
   type WorkerTaskResult,
+  writtenPathsOf,
 } from "./worker-result.js";
 import type { StructuredLogger } from "../../tracing/index.js";
 import { getConfig } from "../../config/index.js";
@@ -1220,6 +1222,23 @@ async function runOneTask(
       steered,
     });
   };
+  // A whole-file rewrite of a file this worker already wrote (k8b: two
+  // of six writes, ~200 s on the critical path) is steered once toward
+  // `os.fs.edit`. Checked before the collector observes the write, so
+  // the written set is what existed before this call.
+  let rewriteSteered = false;
+  const checkRewrite = (tool: string, details: Record<string, unknown> | undefined): void => {
+    if (rewriteSteered || tool !== "os.fs.write" || deps.steerWorker === undefined) return;
+    const before = new Set(collector.writtenPaths());
+    const again = writtenPathsOf(details).find((path) => before.has(path));
+    if (again === undefined) return;
+    rewriteSteered = deps.steerWorker(session.id, formatRewriteSteer(again));
+    deps.logger?.info("fusion: worker steered from a rewrite to os.fs.edit", {
+      taskId: task.id,
+      path: again,
+      steered: rewriteSteered,
+    });
+  };
   const maybeHandBack = (): void => {
     if (declaredFiles === 0 || wroteSomething || handBack.signal.aborted)
       return;
@@ -1542,6 +1561,11 @@ async function runOneTask(
           if (result.status === "ok" && WRITE_TOOLS.has(result.tool)) {
             wroteSomething = true;
             wroteThisStep = true;
+            try {
+              checkRewrite(result.tool, result.details);
+            } catch {
+              // A check never takes the worker down.
+            }
           }
           currentFingerprints.push(fingerprintToolOutcome(result.tool, result));
           if (result.status === "ok" && !READ_ONLY_TOOLS.has(result.tool)) {
