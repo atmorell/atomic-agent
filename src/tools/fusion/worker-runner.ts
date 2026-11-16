@@ -40,9 +40,13 @@ import {
 import type { DeclaredInputsRegistry } from "../os/fs/fs-declared-inputs.js";
 import {
   type CheckRepeatState,
+  CHECK_IDLE_HOLD_STEPS,
+  CHECK_IDLE_STEER_STEPS,
   CHECKS_GREEN_HOLD_NOTICE,
+  CHECKS_IDLE_HOLD_NOTICE,
   CHECKS_STOPPED_HOLD_NOTICE,
   checkFailureSignature,
+  formatCheckIdleSteer,
   formatCheckResultSteer,
   formatRewriteSteer,
   formatRunBeforeRereadSteer,
@@ -345,6 +349,9 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set([
   "os.fs.edit",
   "os.fs.patch",
 ]);
+
+/** How much of a refused write's message the idle steer quotes (`formatCheckIdleSteer`). */
+const IDLE_FAILED_EDIT_CHARS = 200;
 
 /**
  * Modules a worker can run on `os.shell.run`'s stdin. Plain `.js` is left
@@ -1419,6 +1426,16 @@ async function runOneTask(
   // 16-11-2026: stopped at 282 s, it edited against a wrong assert to
   // 600 s). Cleared by a change, like `checksGreen`.
   let checksStopped = false;
+  // Failed checks of the last finished run, and the steps in a row since
+  // without a successful write (`CHECK_IDLE_STEER_STEPS`): the checks run
+  // only after a change, so nothing else counts a worker that reads, runs
+  // and fails its edits (k8an, 16-11-2026: 19 steps, 222-478 s). A write
+  // clears the count and the hold; `idleFailedEdit` is the last refused
+  // write since, quoted in the steer.
+  let standingFailed = 0;
+  let idleSteps = 0;
+  let checksIdle = false;
+  let idleFailedEdit: string | undefined;
   // Per check index: the last failure's signature and how many runs in a
   // row returned it. Measured (k8z): one wrong assert was steered in 8
   // times until the run timed out; the third identical failure now stops
@@ -1454,6 +1471,7 @@ async function runOneTask(
       });
       if (signal.aborted) return;
       if (run.outcomes.length === 0) {
+        standingFailed = 0;
         deps.logger?.info("fusion: worker's checks not run after a change", {
           taskId: task.id,
           reason: run.checksSkipped ?? "no outcome",
@@ -1475,6 +1493,8 @@ async function runOneTask(
           )
         : run.outcomes;
       const failed = outcomes.filter((outcome) => !outcome.ok).length;
+      standingFailed = failed;
+      idleSteps = 0;
       // Green only for the code it ran: a write during the run reopens.
       checksGreen = failed === 0 && !changedSinceCheck;
       const repeats = repeatStatesFor(outcomes);
@@ -1517,6 +1537,23 @@ async function runOneTask(
       .finally(() => {
         pendingCheck = undefined;
       });
+  };
+  // Called at a step's end before `checkAfterChange`, so a step that wrote
+  // (`changedSinceCheck`) or a run still going counts nothing.
+  const countIdleStep = (): void => {
+    if (standingFailed === 0 || changedSinceCheck || pendingCheck !== undefined) return;
+    idleSteps += 1;
+    if (idleSteps === CHECK_IDLE_STEER_STEPS) {
+      const steered =
+        deps.steerWorker?.(session.id, formatCheckIdleSteer(idleSteps, idleFailedEdit)) ?? false;
+      deps.logger?.info("fusion: worker idle under a failing check — steered", {
+        taskId: task.id,
+        idleSteps,
+        failed: standingFailed,
+        steered,
+      });
+    }
+    if (idleSteps >= CHECK_IDLE_HOLD_STEPS) checksIdle = true;
   };
   const maybeHandBack = (): void => {
     if (declaredFiles === 0 || wroteSomething || handBack.signal.aborted)
@@ -1846,6 +1883,7 @@ async function runOneTask(
   // check still failing is one it was told to stop on (`checksStopped`).
   const greenHold: StepHold = { terminalOnly: true, notice: CHECKS_GREEN_HOLD_NOTICE };
   const stoppedHold: StepHold = { terminalOnly: true, notice: CHECKS_STOPPED_HOLD_NOTICE };
+  const idleHold: StepHold = { terminalOnly: true, notice: CHECKS_IDLE_HOLD_NOTICE };
   const waitForCheck = async (stepIndex: number): Promise<StepHold | undefined> => {
     const pending = pendingCheck;
     if (checkSignal.aborted) return undefined;
@@ -1882,6 +1920,14 @@ async function runOneTask(
         stepIndex,
       });
       return stoppedHold;
+    }
+    if (checksIdle) {
+      deps.logger?.info("fusion: worker idle under a failing check — this step takes only reply", {
+        taskId: task.id,
+        stepIndex,
+        idleSteps,
+      });
+      return idleHold;
     }
     return undefined;
   };
@@ -2007,11 +2053,16 @@ async function runOneTask(
             changedSinceCheck = true;
             checksGreen = false;
             checksStopped = false;
+            idleSteps = 0;
+            checksIdle = false;
+            idleFailedEdit = undefined;
             try {
               checkRewrite(result.tool, result.details);
             } catch {
               // A check never takes the worker down.
             }
+          } else if (result.status === "error" && WRITE_TOOLS.has(result.tool)) {
+            idleFailedEdit = result.summary.replace(/\s+/g, " ").trim().slice(0, IDLE_FAILED_EDIT_CHARS);
           }
           try {
             checkRunBeforeReread(result.tool, result.status, result.details);
@@ -2047,6 +2098,7 @@ async function runOneTask(
         // Started here, awaited by `beforeStep` before the next step.
         if (event.type === "step_finished") {
           try {
+            if (checksAfterChange) countIdleStep();
             checkAfterChange(checkSignal);
           } catch {
             // A check never takes the worker down.

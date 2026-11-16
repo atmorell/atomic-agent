@@ -14,12 +14,16 @@ import type { DelegateContract } from "./contract.js";
 import type { DelegateTask } from "./delegate-args.js";
 import {
   CHECK_DOUBT_NOTE,
+  CHECK_IDLE_HOLD_STEPS,
+  CHECK_IDLE_STEER_STEPS,
   CHECK_STOP_NOTE,
   CHECKS_GREEN_HOLD_NOTICE,
+  CHECKS_IDLE_HOLD_NOTICE,
   CHECKS_RUN_BY_RUNTIME_RULE,
   CHECKS_STOPPED_HOLD_NOTICE,
   checkFailureSignature,
   failingCheckLine,
+  formatCheckIdleSteer,
   formatCheckResultSteer,
 } from "./worker-prompt.js";
 
@@ -32,9 +36,31 @@ import {
 
 type TurnOptions = Parameters<WorkerRunnerDeps["runTurn"]>[2];
 
-/** One scripted worker step: the files it writes (`os.fs.write` once, then `os.fs.edit`). */
+/**
+ * One scripted worker step: the files it writes (`os.fs.write` once, then
+ * `os.fs.edit`), and edits the tool refused (`status: "error"`).
+ */
 interface Step {
   writes?: string[];
+  refused?: string[];
+}
+
+function refusedEdit(path: string): never {
+  return {
+    type: "llm_event",
+    event: {
+      type: "tool_call_executed",
+      result: {
+        tool: "os.fs.edit",
+        status: "error",
+        summary: "os.fs.edit: `newString` must differ from `oldString`",
+        details: { path },
+        truncated: false,
+      },
+      batchIndex: 0,
+      batchSize: 1,
+    },
+  } as never;
 }
 
 function executed(tool: string, path: string, n: number): never {
@@ -76,6 +102,9 @@ function harness(dir: string, script: Step[], runChecks?: ContractCheckRunner) {
           writeFileSync(path, `v${writes}`);
           options.eventHook?.(executed(written.has(path) ? "os.fs.edit" : "os.fs.write", path, writes));
           written.add(path);
+        }
+        for (const file of script[i]!.refused ?? []) {
+          options.eventHook?.(refusedEdit(join(dir, file)));
         }
         options.eventHook?.({ type: "step_finished", stepIndex: i } as never);
       }
@@ -380,6 +409,65 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     expect(h.holds[3]).toBeUndefined();
   });
 
+  // k8an: 19 steps without a write under a failing check, 222-478 s; the
+  // checks run only after a change, so the doubt and the stop never came.
+  const idleHold = { terminalOnly: true, notice: CHECKS_IDLE_HOLD_NOTICE };
+  const idle = (n: number): Step[] => Array.from({ length: n }, () => ({}));
+  const both: Step = { writes: ["core.py", "cli.py"] };
+  const failing = () => fakeRunner([[{ ok: false, error: "exit 1" }, { ok: true }]]);
+  const idleSteers = (readAt: string[][]) =>
+    readAt.flat().filter((text) => text.startsWith("A check of your task still fails"));
+
+  it("steers a worker that changes nothing under a failing check once, then holds it to reply", async () => {
+    const h = harness(dir, [both, ...idle(CHECK_IDLE_HOLD_STEPS + 1)], failing().runner);
+    await run(h.deps);
+    expect(h.readAt[1]![0]).toContain("1 of 2 failed");
+    expect(h.readAt[CHECK_IDLE_STEER_STEPS + 1]).toEqual([formatCheckIdleSteer(CHECK_IDLE_STEER_STEPS)]);
+    expect(idleSteers(h.readAt)).toHaveLength(1);
+    expect(h.holds.slice(0, CHECK_IDLE_HOLD_STEPS + 1).every((hold) => hold === undefined)).toBe(true);
+    expect(h.holds[CHECK_IDLE_HOLD_STEPS + 1]).toEqual(idleHold);
+  });
+
+  it("counts again from a successful write", async () => {
+    const h = harness(
+      dir,
+      [both, {}, {}, { writes: ["core.py"] }, ...idle(CHECK_IDLE_HOLD_STEPS)],
+      failing().runner,
+    );
+    await run(h.deps);
+    expect(idleSteers(h.readAt)).toHaveLength(1);
+    expect(idleSteers(h.readAt[3 + CHECK_IDLE_STEER_STEPS + 1]!)).toHaveLength(1);
+    expect(h.holds.every((hold) => hold === undefined)).toBe(true);
+  });
+
+  it("counts a refused edit as no change and quotes it in the steer", async () => {
+    const h = harness(
+      dir,
+      [both, { refused: ["core.py"] }, {}, { refused: ["core.py"] }, {}, {}],
+      failing().runner,
+    );
+    await run(h.deps);
+    expect(h.readAt[5]).toEqual([
+      formatCheckIdleSteer(4, "os.fs.edit: `newString` must differ from `oldString`"),
+    ]);
+  });
+
+  it("counts nothing when the checks have not run", async () => {
+    const { runner, calls } = fakeRunner([[{ ok: false, error: "exit 1" }, { ok: true }]]);
+    const h = harness(dir, [{ writes: ["core.py"] }, ...idle(CHECK_IDLE_HOLD_STEPS + 1)], runner);
+    await run(h.deps, ["core.py", "missing.py"]);
+    expect(calls).toHaveLength(0);
+    expect(h.readAt.flat()).toEqual([]);
+    expect(h.holds.every((hold) => hold === undefined)).toBe(true);
+  });
+
+  it("keeps the stop-hold's notice when the worker is also idle", async () => {
+    const { runner } = fakeRunner([1, 2, 3].map((n) => [same(n), { ok: true }]));
+    const h = harness(dir, [...writeCore(3), ...idle(CHECK_IDLE_HOLD_STEPS)], runner);
+    await run(h.deps);
+    expect(h.holds[3 + CHECK_IDLE_HOLD_STEPS]).toEqual(stoppedHold);
+  });
+
   it("tells the worker in its brief only when the runtime will run them", async () => {
     const { runner } = fakeRunner([[{ ok: true }, { ok: true }]]);
     const wired = harness(dir, [{}], runner);
@@ -388,6 +476,20 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     const unwired = harness(dir, [{}]);
     await run(unwired.deps);
     expect(unwired.briefs[0]).not.toContain(CHECKS_RUN_BY_RUNTIME_RULE);
+  });
+});
+
+describe("formatCheckIdleSteer", () => {
+  it("asks for one exact edit or a reply", () => {
+    const text = formatCheckIdleSteer(4);
+    expect(text).toContain("changed no file in 4 steps");
+    expect(text).toContain("os.fs.edit");
+    expect(text).not.toContain("Your last edit failed");
+  });
+
+  it("quotes the last refused edit on its own line", () => {
+    const text = formatCheckIdleSteer(4, "os.fs.edit: old text not found");
+    expect(text.split("\n")).toEqual([formatCheckIdleSteer(4), "Your last edit failed: os.fs.edit: old text not found"]);
   });
 });
 

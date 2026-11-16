@@ -292,6 +292,28 @@ export const CHECKS_GREEN_HOLD_NOTICE =
 export const CHECKS_STOPPED_HOLD_NOTICE =
   "Every check still failing has failed the same way three times: this step takes only reply. Name the files you wrote and each check you stopped on.";
 
+/**
+ * Steps in a row without a successful write while the last run of the
+ * worker's checks had a failure (`worker-runner.ts`). The checks run only
+ * after a change, so a worker that reads, runs and fails its edits never
+ * reaches the doubt or the stop. Measured (k8an, 16-11-2026): the io
+ * worker took 19 steps from 222 to 478 s without a write — four edits
+ * refused as "`newString` must differ from `oldString`" — and was stopped
+ * only at 559 s. At the first count it is steered once; at the second its
+ * next step takes only `reply`/`finish`.
+ */
+export const CHECK_IDLE_STEER_STEPS = 4;
+export const CHECK_IDLE_HOLD_STEPS = 8;
+
+export function formatCheckIdleSteer(steps: number, failedEdit?: string): string {
+  return [
+    `A check of your task still fails and you have changed no file in ${steps} steps. Make one \`os.fs.edit\` now, with \`oldString\` copied exactly from a fresh read and a different \`newString\`, or reply naming the check you could not fix.`,
+    ...(failedEdit === undefined ? [] : [`Your last edit failed: ${failedEdit}`]),
+  ].join("\n");
+}
+
+export const CHECKS_IDLE_HOLD_NOTICE = `A check of your task still fails and you changed no file in ${CHECK_IDLE_HOLD_STEPS} steps: this step takes only reply. Name the files you wrote and the check that fails.`;
+
 const CHECK_STEER_SPEC_CHARS = 140;
 const CHECK_STEER_MAX_FAILURES = 3;
 
