@@ -211,9 +211,9 @@ describe("a red item needs a defect, and a retry is a repair (k8c, 16-11-2026)",
     expect(brief.split("\n")).toEqual([
       "## A judge found these acceptance items NOT met in your previous attempt",
       "- [a5] done as instructed — vis crashes on an invalid cell",
-      "This is a repair, not a second attempt. The files from the previous attempt are on disk: edit only the lines these findings name, in files you own, and write no new file unless a finding asks for one. The task's other instructions are already done — do not repeat them or their self-tests. Run `python -m pytest -q` at most once, then reply.",
+      "This is a repair, not a second attempt. The files from the previous attempt are on disk: edit only the lines these findings name, in files you own, and write no new file unless a finding asks for one. The task's other instructions are already done — do not repeat them or their self-tests. Start with one `os.shell.run` with a short script on `stdin` that calls the case a finding names and shows it failing; then read only the lines its error names. After the fix, run `python -m pytest -q` at most once, then reply.",
     ]);
-    expect(renderRetryFindings(items, verdict)).toContain("Run the task's check at most once, then reply.");
+    expect(renderRetryFindings(items, verdict)).toContain("After the fix, run the task's check at most once, then reply.");
   });
 });
 

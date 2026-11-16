@@ -1178,8 +1178,9 @@ export function renderRetryFindings(
       : []),
     // k8c: two small fixes took about 17 steps each and the run timed
     // out; the retry re-read the original brief's "run a self-test" as
-    // live and wrote an extra `_selftest.py` (16-11-2026).
-    `This is a repair, not a second attempt. The files from the previous attempt are on disk: edit only the lines these findings name, in files you own, and write no new file unless a finding asks for one. The task's other instructions are already done — do not repeat them or their self-tests. Run ${verify?.command === undefined ? "the task's check" : `\`${verify.command.slice(0, 200)}\``} at most once, then reply.`,
+    // live and wrote an extra `_selftest.py` (16-11-2026). k8p: the retry
+    // read `formel.py` six times (77 s) before it ran the named case once.
+    `This is a repair, not a second attempt. The files from the previous attempt are on disk: edit only the lines these findings name, in files you own, and write no new file unless a finding asks for one. The task's other instructions are already done — do not repeat them or their self-tests. Start with one \`os.shell.run\` with a short script on \`stdin\` that calls the case a finding names and shows it failing; then read only the lines its error names. After the fix, run ${verify?.command === undefined ? "the task's check" : `\`${verify.command.slice(0, 200)}\``} at most once, then reply.`,
   ].join("\n");
 }
 
