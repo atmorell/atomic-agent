@@ -233,9 +233,11 @@ export const SLOW_PASS_RULE =
  * on it. The CLI worker read a corrupt `ark.json` outside its `try`
  * (k8k: `vis a1` gave a traceback, not "Fejl:"). Each cost a second judge
  * round, about 120 s. The given examples are a floor, not the coverage.
+ * k8m: the core went green in round one; the CLI never ran an unknown
+ * command, so argparse's multi-line usage on stderr went unseen.
  */
 export const NAMED_CASES_RULE =
-  "- The examples in your task are a minimum. Before you reply, also run each function, operator and error your task names once on ordinary input (for an error: bad input, a missing or corrupt file) and check the output is what the task says.";
+  "- The examples in your task are a minimum. Before you reply, also run each function, operator and error your task names once (for an error: an unknown command or a missing argument, bad input, a missing or corrupt file) and check the whole output, stderr included, is what the task says.";
 
 /** The one steer sent when a worker reads a module it has not run since writing it. */
 export function formatRunBeforeRereadSteer(path: string): string {

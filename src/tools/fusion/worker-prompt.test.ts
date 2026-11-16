@@ -193,6 +193,9 @@ describe("renderWorkerBrief — siblings and browser code (ATO-919)", () => {
     expect(at).toBeLessThan(brief.indexOf("- Finish with `reply`"));
     expect(NAMED_CASES_RULE).toMatch(/a minimum/);
     expect(NAMED_CASES_RULE).toMatch(/corrupt file/);
+    // k8m: argparse printed its usage for an unknown command.
+    expect(NAMED_CASES_RULE).toMatch(/unknown command/);
+    expect(NAMED_CASES_RULE).toMatch(/stderr included/);
   });
 });
 
