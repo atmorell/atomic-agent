@@ -462,8 +462,8 @@ describe("fusion.delegate with isolation", () => {
         ],
         maxWorkers: 1,
         contract: {
-          provides: [{ task: "one", kind: "other", name: "done" }],
-          requires: [{ task: "two", name: "done" }],
+          provides: [{ task: "one", kind: "file", name: "one.txt" }],
+          requires: [{ task: "two", name: "one.txt" }],
         },
       },
       ctx(repo),

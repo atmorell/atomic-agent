@@ -293,6 +293,27 @@ export function renderContractBlock(contract: DelegateContract): string {
 }
 
 /**
+ * Whether `source` is being written while `taskId` runs. Only a `file`
+ * provide puts its consumer in a later wave (`dependenciesOf`), so a
+ * symbol from a task this one waits on for no file is not there yet —
+ * and a worker told "you may rely on" it would otherwise look for it.
+ */
+function writtenMeanwhile(
+  contract: DelegateContract,
+  taskId: string,
+  source: ContractProvide,
+): boolean {
+  if (source.kind === "file" || source.task === taskId) return false;
+  return !(contract.requires ?? []).some(
+    (r) =>
+      r.task === taskId &&
+      (contract.provides ?? []).some(
+        (p) => p.name === r.name && p.task === source.task && p.kind === "file",
+      ),
+  );
+}
+
+/**
  * The three lines that turn the shared block into this worker's own
  * obligations. A require is resolved to the provide it names so the
  * worker knows who produces it and where to find it; one that resolves
@@ -316,7 +337,7 @@ export function renderContractForTask(
       return source === undefined
         ? []
         : [
-            `${r.name} (${source.kind} from ${source.task}${source.in === undefined ? "" : ` in ${source.in}`})${source.shape === undefined ? "" : ` — ${source.shape}`}`,
+            `${r.name} (${source.kind} from ${source.task}${source.in === undefined ? "" : ` in ${source.in}`})${source.shape === undefined ? "" : ` — ${source.shape}`}${writtenMeanwhile(contract, taskId, source) ? " — written at the same time, so it may not exist yet: code against it, do not wait for it or read it" : ""}`,
           ];
     });
   return [

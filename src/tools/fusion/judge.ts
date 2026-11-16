@@ -625,6 +625,10 @@ export const JUDGE_RULES = [
   "You are a strict acceptance judge. Workers say they finished the task or tasks in the case below. Do not trust them: find where the work does NOT meet each item. Rule on each task's items against that task's instructions, only from the evidence shown. If the evidence does not show an item is met, it is not met.",
   JUDGE_SEVERITY_RULE,
   "A step of process — running a command, its result, which files were written — is shown by the runtime's record for that task at the end of the case, not by the files.",
+  // k8c (16-11-2026): the core task went red only for "the python -c
+  // self-test was never run to its exit" while the runtime's pytest had
+  // passed, and its retry ran 250 s beside the one real red task.
+  "An instruction to run a check (a self-test, a command) is a means, not a deliverable: when the runtime's verify passed, a check the worker did not run is not a defect by itself. Rule red only for a defect the evidence shows in what the check was for — say which line or behaviour.",
   "When the case shows the user's original request, the tasks were briefed from it. Where that request fixes an exact name, message, output line, format or value for what a task builds, the work must match it character for character; the task's own wording does not override it. Rule on each task only for its part of the request.",
   "How the evidence shows a file: a new file whole; a changed file whole when it is short, otherwise as a diff of what the work changed (`+` added, `-` removed, unmarked lines are context) — the parts of it the diff does not show are as they were before the work; an unchanged file whole when it is short, otherwise only by name. An item that needs a change the evidence does not show is not met.",
   // Every defect at once: k3b's first round named only "Tilføjet", the
@@ -1158,7 +1162,10 @@ export function renderRetryFindings(
           "```",
         ]
       : []),
-    "Fix exactly these. The files from the previous attempt are on disk; change them rather than starting over.",
+    // k8c: two small fixes took about 17 steps each and the run timed
+    // out; the retry re-read the original brief's "run a self-test" as
+    // live and wrote an extra `_selftest.py` (16-11-2026).
+    `This is a repair, not a second attempt. The files from the previous attempt are on disk: edit only the lines these findings name, in files you own, and write no new file unless a finding asks for one. The task's other instructions are already done — do not repeat them or their self-tests. Run ${verify?.command === undefined ? "the task's check" : `\`${verify.command.slice(0, 200)}\``} at most once, then reply.`,
   ].join("\n");
 }
 

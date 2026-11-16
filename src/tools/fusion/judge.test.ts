@@ -27,9 +27,11 @@ import {
   parseJudgeAnswer,
   renderJudgeCallPrompt,
   renderJudgePrompt,
+  renderRetryFindings,
   renderRuntimeRecord,
   shareEvidenceBudget,
   type AcceptanceItem,
+  type JudgeVerdict,
   type JudgeSession,
 } from "./judge.js";
 import { JUDGE_FIXED_PART_END } from "../../llm/provider/subscription-cli/cli-session-chain.js";
@@ -180,6 +182,37 @@ describe("the judge names every defect in its first round (k3b, 16-11-2026)", ()
     expect(answer).toContain("Name all of a red item's defects now");
     expect(answer).toContain('another item that fails for the same defect says only "same as <id>"');
     expect(answer).not.toContain("what is wrong");
+  });
+});
+
+describe("a red item needs a defect, and a retry is a repair (k8c, 16-11-2026)", () => {
+  it("tells the judge an unrun check is not a defect by itself when the verify passed", () => {
+    expect(JUDGE_RULES).toContain("is a means, not a deliverable");
+    expect(JUDGE_RULES).toContain("when the runtime's verify passed, a check the worker did not run is not a defect by itself");
+    expect(JUDGE_RULES).toContain("Rule red only for a defect the evidence shows in what the check was for");
+  });
+
+  it("bounds the retry to the named lines and one run of the verify", () => {
+    const items: AcceptanceItem[] = [
+      { id: "a5", kind: "instructions", text: "done as instructed", judged: true },
+    ];
+    const verdict: JudgeVerdict = {
+      green: false,
+      items: [{ id: "a5", pass: false, by: "judge", why: "vis crashes on an invalid cell" }],
+      costUsd: null,
+    };
+    const brief = renderRetryFindings(items, verdict, {
+      ok: true,
+      exitCode: 0,
+      command: "python -m pytest -q",
+      excerpt: [],
+    });
+    expect(brief.split("\n")).toEqual([
+      "## A judge found these acceptance items NOT met in your previous attempt",
+      "- [a5] done as instructed — vis crashes on an invalid cell",
+      "This is a repair, not a second attempt. The files from the previous attempt are on disk: edit only the lines these findings name, in files you own, and write no new file unless a finding asks for one. The task's other instructions are already done — do not repeat them or their self-tests. Run `python -m pytest -q` at most once, then reply.",
+    ]);
+    expect(renderRetryFindings(items, verdict)).toContain("Run the task's check at most once, then reply.");
   });
 });
 

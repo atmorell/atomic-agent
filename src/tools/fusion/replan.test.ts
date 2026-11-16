@@ -74,8 +74,8 @@ const ORDERED = {
     { id: "ui", title: "UI", instructions: "make ui" },
   ],
   contract: {
-    provides: [{ task: "core", kind: "symbol", name: "Core.run", in: "core.js" }],
-    requires: [{ task: "ui", name: "Core.run" }],
+    provides: [{ task: "core", kind: "file", name: "core.js" }],
+    requires: [{ task: "ui", name: "core.js" }],
   },
 };
 

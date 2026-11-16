@@ -81,7 +81,7 @@ describe("renderContractForTask", () => {
     expect(main.split("\n")).toEqual([
       "You own: js/main.js",
       "You provide: nothing listed",
-      "You may rely on: HD.Ship (symbol from ship in js/ship.js); btn-launch (id from html in index.html)",
+      "You may rely on: HD.Ship (symbol from ship in js/ship.js) — written at the same time, so it may not exist yet: code against it, do not wait for it or read it; btn-launch (id from html in index.html) — written at the same time, so it may not exist yet: code against it, do not wait for it or read it",
     ]);
     const ship = renderContractForTask(CONTRACT, "ship");
     expect(ship).toContain("You own: js/ship.js");
@@ -159,8 +159,26 @@ describe("contract warnings", () => {
       "You may rely on: nothing from the other parts",
     );
     expect(renderContractForTask(LOOSE, "main")).toContain(
-      "You may rely on: btn-launch (id from html in index.html)",
+      "You may rely on: btn-launch (id from html in index.html) — written at the same time, so it may not exist yet: code against it, do not wait for it or read it",
     );
+  });
+
+  // k8c (16-11-2026): only a file provide puts its consumer in a later
+  // wave, so the consumer of a symbol is told it is written meanwhile.
+  it("tells the consumer of a non-file provide it is written at the same time, and the consumer of a file that it is there", () => {
+    const c = {
+      provides: [
+        { task: "kerne", kind: "symbol" as const, name: "Ark", in: "ark/ark.py", shape: "Ark(path).set(cell, text)" },
+        { task: "kerne", kind: "file" as const, name: "ark/ark.py" },
+      ],
+      requires: [{ task: "cli", name: "Ark" }],
+    };
+    expect(renderContractForTask(c, "cli")).toContain(
+      `You may rely on: Ark (symbol from kerne in ark/ark.py) — Ark(path).set(cell, text) — written at the same time, so it may not exist yet: code against it, do not wait for it or read it`,
+    );
+    // The same symbol from a provider this task also waits on for a file is there when it starts.
+    const waited = { ...c, requires: [...c.requires, { task: "cli", name: "ark/ark.py" }] };
+    expect(renderContractForTask(waited, "cli")).not.toContain("written at the same time");
   });
 });
 

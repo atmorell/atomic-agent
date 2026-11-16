@@ -24,6 +24,14 @@ import type { WorkerTaskResult, WorkerTaskStatus } from "./worker-result.js";
  * warning. A contract without `requires`, or whose requires name
  * nothing any task provides, orders nothing: one wave, exactly the
  * fan-out that ran before waves existed.
+ *
+ * Only a `file` provide orders the fan-out: the consumer reads it, so
+ * it must exist first. A symbol, id, endpoint, env, flag or other is an
+ * interface; the consumer codes against its name and `shape` while the
+ * producer writes it. k8c (16-11-2026) declared `cli requires Ark`, a
+ * symbol, and the two tasks ran one after the other — about 130 s of a
+ * 600 s budget — although the brief told cli the other worker was
+ * writing Ark at the same time.
  */
 export interface WavePlan {
   /** Task ids, wave by wave; each wave in the caller's task order. */
@@ -37,7 +45,7 @@ export interface WavePlan {
   cycle?: string;
 }
 
-/** A task that requires X depends on every OTHER task that provides X. */
+/** A task that requires file X depends on every OTHER task that provides it. */
 export function dependenciesOf(
   taskIds: readonly string[],
   contract: DelegateContract | undefined,
@@ -47,7 +55,7 @@ export function dependenciesOf(
   for (const require of contract?.requires ?? []) {
     if (!known.has(require.task)) continue;
     for (const provide of contract?.provides ?? []) {
-      if (provide.name !== require.name) continue;
+      if (provide.name !== require.name || provide.kind !== "file") continue;
       if (provide.task === require.task || !known.has(provide.task)) continue;
       const own = dependencies.get(require.task) ?? [];
       if (!own.includes(provide.task)) own.push(provide.task);

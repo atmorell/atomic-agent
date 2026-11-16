@@ -111,8 +111,8 @@ const TASKS = [
 const ORDERED = {
   tasks: TASKS.slice(0, 2),
   contract: {
-    provides: [{ task: "t1", kind: "other", name: "done" }],
-    requires: [{ task: "t2", name: "done" }],
+    provides: [{ task: "t1", kind: "file", name: "one.txt" }],
+    requires: [{ task: "t2", name: "one.txt" }],
   },
 };
 

@@ -1169,8 +1169,8 @@ describe("fusion.delegate", () => {
 
         // Presence: `HD.Ship.reset` was never written; the id is spelled the other way.
         const lines = result.summary.split("\n");
-        // t2 requires what t1 provides, so t2 ran in a second wave (F45).
-        expect(lines[0]).toBe("2 tasks in 2 waves (t1 → t2): 1 ok, 1 failed");
+        // t2 requires a symbol t1 provides: an interface, so both ran at once (F45, k8c).
+        expect(lines[0]).toBe("2 tasks: 1 ok, 1 failed");
         expect(lines[1]).toBe(
           "contract: 2 missing — [t1] symbol HD.Ship.reset not in js/ship.js; [t2] id btn-launch not in index.html; call-level checks: 1 of 1 passed",
         );
@@ -1618,6 +1618,35 @@ describe("fusion.delegate", () => {
       expect(fake.peak()).toBe(3);
       expect(result.details).not.toHaveProperty("waves");
       expect(result.summary.split("\n")[0]).toBe("3 tasks: 2 ok, 1 failed");
+    });
+
+    // k8c (16-11-2026): `cli requires Ark`, a symbol, ran the two tasks
+    // one after the other — about 130 s of a 600 s budget.
+    it("orders only on a file provide: the consumer of a symbol runs beside its producer", async () => {
+      const briefs: string[] = [];
+      const fake = ordering({ briefs });
+      const tool = buildFusionDelegateTool(deps({ runTurn: fake.runTurn }));
+      const result = await tool.run(
+        {
+          tasks: PIPELINE,
+          contract: {
+            provides: [
+              { task: "analyze", kind: "symbol", name: "Manifest.load", in: "manifest.py", shape: "load(path) -> dict" },
+            ],
+            requires: [
+              { task: "organize", name: "Manifest.load" },
+              { task: "index", name: "Manifest.load" },
+            ],
+          },
+          maxWorkers: 3,
+        },
+        ctx(),
+      );
+      expect(fake.peak()).toBe(3);
+      expect(fake.resolvedBefore.organize).toEqual([]);
+      expect(result.details).not.toHaveProperty("waves");
+      const organize = briefs.find((b) => b.includes("You may rely on: Manifest.load"))!;
+      expect(organize).toContain("written at the same time, so it may not exist yet");
     });
   });
 
