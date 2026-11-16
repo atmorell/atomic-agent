@@ -43,6 +43,7 @@ import {
 import { describeReplan, renderReplanBlock } from "./replan.js";
 import {
   AUTOVERIFY_REPAIR_MAX_STEPS,
+  classifyVerifyResult,
   diffStat,
   readAutoVerifyArgs,
   renderAutoVerifyBlock,
@@ -51,6 +52,7 @@ import {
   type AutoVerifyDispatch,
   type AutoVerifyReport,
   type FileSnapshot,
+  type VerifyVerdict,
 } from "./autoverify.js";
 import { LocalLegHealth } from "./local-leg-health.js";
 import {
@@ -1400,11 +1402,40 @@ export function buildFusionDelegateTool(
       // after that is a failed task, item by item. Its spend counts
       // toward the turn's cap.
       let judgeSpendUsd = 0;
+      // The fan-out's verify, run once before each judge round (k8b,
+      // 16-11-2026: a tests task was red for "tests not run" — its worker
+      // may not wait for a sibling's file — and the core task's NameError
+      // reached no retry, because autoverify ran only after both rounds).
+      // The judge reads the run as a fact, a red task's retry gets its
+      // failure output, and autoverify takes the last run as its first
+      // round: no worker wrote after it.
+      const judgedVerify: { run?: Extract<VerifyVerdict, { ran: true }> } = {};
       if (judging && judgeTarget !== null) {
         const judgePricing = deps.resolveWorkerPricing?.(
           judgeTarget.providerId,
           judgeTarget.model ?? judgeTarget.providerId,
         );
+        const verifyBeforeJudge = async (): Promise<void> => {
+          delete judgedVerify.run;
+          if (verifyArgs === undefined || deps.dispatchVerify === undefined) return;
+          if ([...breakers.values()].some((b) => b.tripped() !== undefined)) return;
+          const startedAt = Date.now();
+          try {
+            const verdict = classifyVerifyResult(
+              await deps.dispatchVerify(verifyArgs, { ...ctx, signal: runSignal }),
+            );
+            if (verdict.ran) judgedVerify.run = verdict;
+            deps.logger.info("fusion: verify before the judge", {
+              ran: verdict.ran,
+              ...(verdict.ran
+                ? { ok: verdict.ok, exitCode: verdict.exitCode }
+                : { reason: verdict.reason.slice(0, 200) }),
+              ms: Date.now() - startedAt,
+            });
+          } catch {
+            // Not run: autoverify runs it after the judge, as before.
+          }
+        };
         const judgeable = (r: WorkerTaskResult): boolean =>
           (acceptance.get(r.id)?.length ?? 0) > 0 &&
           (r.status === "ok" ||
@@ -1430,6 +1461,7 @@ export function buildFusionDelegateTool(
             }
             return verdicts;
           }
+          await verifyBeforeJudge();
           // One judge call for the round, not one per task: the preamble,
           // the user's request and shared files were paid for once per
           // task (k3a, 15-11-2026: two calls of 7-9k written tokens each).
@@ -1461,6 +1493,7 @@ export function buildFusionDelegateTool(
             signal: ctx.signal,
             ...(originalRequest === undefined ? {} : { originalRequest }),
             ...(judgeBefore === undefined ? {} : { before: judgeBefore }),
+            ...(judgedVerify.run === undefined ? {} : { verify: judgedVerify.run }),
             session: judgeSession,
           });
           for (const [taskId, verdict] of judged) {
@@ -1508,9 +1541,12 @@ export function buildFusionDelegateTool(
           const findings = new Map(
             red.map(([id, verdict]) => [
               id,
-              renderRetryFindings(acceptance.get(id) ?? [], verdict),
+              renderRetryFindings(acceptance.get(id) ?? [], verdict, judgedVerify.run),
             ]),
           );
+          // The retry writes again: the run before it no longer stands
+          // for the files, unless the second round runs the verify anew.
+          delete judgedVerify.run;
           // The retry keeps the right to split: a task judged red for being
           // too big would only fail again in one piece.
           const retryTasks = parsed.tasks.filter((t) => retryIds.has(t.id));
@@ -1614,6 +1650,7 @@ export function buildFusionDelegateTool(
                 },
                 before: autoVerifyBefore,
                 snapshot,
+                ...(judgedVerify.run === undefined ? {} : { prior: judgedVerify.run }),
                 // One task, done, and nothing else wrote after it: its
                 // worker's own last run is the files as they are now.
                 ...(parsed.tasks.length === 1 &&

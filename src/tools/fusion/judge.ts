@@ -583,6 +583,39 @@ export interface JudgePromptTask {
 const RECORD_HEADING = "## Recorded by the runtime (";
 
 /**
+ * The fan-out's own `verify`, run by the runtime once every task of the
+ * round had finished and before the judge ruled. Measured (k8b,
+ * 16-11-2026): the judge failed a tests task for "tests not run" — its
+ * worker may not wait for a sibling's file — and the core task's
+ * NameError reached no retry; autoverify ran the suite only after both
+ * rounds. `autoverify.ts`'s `VerifyVerdict` of a run that started has
+ * this shape.
+ */
+export interface JudgeVerifyRun {
+  ok: boolean;
+  exitCode: number | null;
+  command?: string;
+  /** Bounded failure output; empty on a pass. */
+  excerpt: readonly string[];
+}
+
+const VERIFY_HEADING = "## Run by the runtime after every task finished (";
+
+/** The verify as a runtime record of the case, after the tasks' own. */
+export function renderVerifyRun(run: JudgeVerifyRun): string {
+  const what = `\`${(run.command ?? "the fan-out's verify").slice(0, 200)}\``;
+  const exit = `exit ${run.exitCode ?? "none"}`;
+  if (run.ok) {
+    return `${VERIFY_HEADING}a fact, not the workers' words)\n- ${what}: passed (${exit})`;
+  }
+  return [
+    `${VERIFY_HEADING}a fact, not the workers' words)`,
+    `- ${what}: FAILED (${exit})${run.excerpt.length === 0 ? "" : "; its output:"}`,
+    ...(run.excerpt.length === 0 ? [] : ["```", ...run.excerpt, "```"]),
+  ].join("\n");
+}
+
+/**
  * The judge's rules: the same bytes in every judge call, one task or
  * many, first round or follow-up, so a vendor CLI keeps them as the
  * system prompt it reads from cache (`JUDGE_FIXED_PART_END`). Nothing
@@ -638,6 +671,8 @@ export function renderJudgeCallPrompt(input: {
    * A follow-up keeps the form its first round used (`JudgeSession`).
    */
   qualified?: boolean;
+  /** `renderVerifyRun`'s text, when the runtime ran the fan-out's verify. */
+  verify?: string;
 }): string {
   const many = input.tasks.length > 1;
   const qualified = input.qualified ?? many;
@@ -691,6 +726,7 @@ export function renderJudgeCallPrompt(input: {
             "",
           ],
     ),
+    ...(input.verify === undefined ? [] : [input.verify, ""]),
     "Answer now with the JSON only, in the form given above; use the item ids exactly as listed.",
   ].join("\n");
 }
@@ -714,6 +750,8 @@ export function renderJudgeFollowUp(input: {
   tasks: readonly JudgeFollowUpTask[];
   evidence: string;
   qualified: boolean;
+  /** `renderVerifyRun`'s text for the run after the retry. */
+  verify?: string;
 }): string {
   const key = itemKey(input.qualified);
   const taskBlock = (t: JudgeFollowUpTask): string[] => {
@@ -773,6 +811,9 @@ export function renderJudgeFollowUp(input: {
             "",
           ],
     ),
+    ...(input.verify === undefined
+      ? []
+      : [input.verify.replace(VERIFY_HEADING, "### Run by the runtime after the retry finished ("), ""]),
     "Answer now with the JSON only, in the form given above, for the items to rule on again; use their ids exactly as listed.",
   ].join("\n");
 }
@@ -873,6 +914,8 @@ export interface JudgeCallInput {
   signal: AbortSignal;
   /** The user's original request, of which every task is one part. */
   originalRequest?: string;
+  /** The fan-out's verify, run after this round's work (`JudgeVerifyRun`). */
+  verify?: JudgeVerifyRun;
 }
 
 /** One task a judge call rules on. */
@@ -998,6 +1041,7 @@ export async function judgeTasks(
       ? {}
       : { record: renderRuntimeRecord(entry.record, input.workingDir) }),
   }));
+  const verify = input.verify === undefined ? {} : { verify: renderVerifyRun(input.verify) };
   const prompt =
     last === undefined
       ? renderJudgeCallPrompt({
@@ -1007,6 +1051,7 @@ export async function judgeTasks(
           ...(input.originalRequest === undefined
             ? {}
             : { originalRequest: input.originalRequest }),
+          ...verify,
         })
       : `${last.prompt}\n${renderJudgeFollowUp({
           tasks: tasks.map((t) => {
@@ -1015,6 +1060,7 @@ export async function judgeTasks(
           }),
           evidence: evidence.text,
           qualified,
+          ...verify,
         })}`;
   let content: string | undefined;
   let costUsd: number | null = null;
@@ -1087,17 +1133,31 @@ export function redItems(verdict: JudgeVerdict): ItemVerdict[] {
   return verdict.items.filter((v) => !v.pass && v.by !== "skipped");
 }
 
-/** The findings a retried worker is briefed with. */
+/**
+ * The findings a retried worker is briefed with, and the fan-out's
+ * failing verify when the runtime ran one before the judge: the k8b
+ * core task's NameError was in that output, not in any finding.
+ */
 export function renderRetryFindings(
   items: readonly AcceptanceItem[],
   verdict: JudgeVerdict,
+  verify?: JudgeVerifyRun,
 ): string {
+  const failed = verify !== undefined && !verify.ok && verify.excerpt.length > 0;
   return [
     "## A judge found these acceptance items NOT met in your previous attempt",
     ...redItems(verdict).map((v) => {
       const item = items.find((i) => i.id === v.id);
       return `- [${v.id}] ${item?.text ?? ""} — ${v.why}`;
     }),
+    ...(failed
+      ? [
+          `The runtime ran \`${(verify.command ?? "the fan-out's verify").slice(0, 200)}\` after every task finished; it failed (exit ${verify.exitCode ?? "none"}). Part of it may come from another task's files — fix what is in yours:`,
+          "```",
+          ...verify.excerpt,
+          "```",
+        ]
+      : []),
     "Fix exactly these. The files from the previous attempt are on disk; change them rather than starting over.",
   ].join("\n");
 }

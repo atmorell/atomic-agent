@@ -392,6 +392,11 @@ export interface RunAutoVerifyInput {
    * ok. A run `reusableWorkerRun` accepts is the pass; nothing is run.
    */
   reuse?: WorkerCommandRun | undefined;
+  /**
+   * This verify, run by the runtime after the last worker wrote (before
+   * the judge, `fusion-delegate.ts`): it is the first round, not run again.
+   */
+  prior?: Extract<VerifyVerdict, { ran: true }> | undefined;
   /** Repairs allowed after the first verify (0..5). */
   maxRepairs: number;
   /** Step budget of each repair task (`AUTOVERIFY_REPAIR_MAX_STEPS` or less). */
@@ -445,19 +450,26 @@ export async function runAutoVerify(input: RunAutoVerifyInput): Promise<AutoVeri
       reused: true,
     };
   }
+  let prior = input.prior;
   for (;;) {
     if (input.ctx.signal.aborted) return done(rounds === 0 ? "not_run" : "fail", "cancelled");
-    let result: CompressedToolResult;
-    try {
-      result = await input.dispatch(input.verifyArgs, input.ctx);
-    } catch (err) {
-      const reason =
-        err instanceof CancelledError || input.ctx.signal.aborted
-          ? "cancelled"
-          : `the verify failed to dispatch: ${err instanceof Error ? err.message : String(err)}`;
-      return done(rounds === 0 ? "not_run" : "fail", reason);
+    let verdict: VerifyVerdict;
+    if (prior !== undefined) {
+      verdict = prior;
+      prior = undefined;
+    } else {
+      let result: CompressedToolResult;
+      try {
+        result = await input.dispatch(input.verifyArgs, input.ctx);
+      } catch (err) {
+        const reason =
+          err instanceof CancelledError || input.ctx.signal.aborted
+            ? "cancelled"
+            : `the verify failed to dispatch: ${err instanceof Error ? err.message : String(err)}`;
+        return done(rounds === 0 ? "not_run" : "fail", reason);
+      }
+      verdict = classifyVerifyResult(result);
     }
-    const verdict = classifyVerifyResult(result);
     if (!verdict.ran) {
       // Nothing ran: a later round's denial still leaves the last real
       // run's failure standing.

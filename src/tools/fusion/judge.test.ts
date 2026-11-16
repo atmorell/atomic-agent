@@ -774,6 +774,107 @@ describe("a node closes only on a green list (ATO-944)", () => {
     expect(red.details).not.toHaveProperty("reviewed");
   });
 
+  // k8b (16-11-2026): a tests task was red for "tests not run" and the
+  // core task's NameError reached no retry; the verify ran only after
+  // both rounds.
+  const PYTEST = { kind: "command", cmd: "python", args: ["-m", "pytest", "-q"], checks: ["exit 0"] };
+  const verifyRun = (ok: boolean) =>
+    compressToolResult({
+      tool: "verify.run",
+      status: ok ? "ok" : "error",
+      output: ok ? "verify.run command: ok" : "verify.run command: failed",
+      details: {
+        ok,
+        kind: "command",
+        exitCode: ok ? 0 : 1,
+        stdoutTail: ok
+          ? "1 passed"
+          : "E   NameError: name 'cellers' is not defined\n=========================== short test summary info ============================\nFAILED test_ark.py::test_sum - NameError: name 'cellers' is not defined\n========================= 1 failed in 0.05s =========================",
+        stderrTail: "",
+        description: "python -m pytest -q",
+        checks: [],
+        isolated: true,
+        durationMs: 5,
+      },
+    });
+
+  it("runs the verify before each round: the judge reads it, the retry gets its failure, autoverify reuses the last (k8b)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-pre-"));
+    const prompts: string[] = [];
+    let verifies = 0;
+    const d = deps(
+      dir,
+      async (call) => {
+        prompts.push(call.prompt);
+        const green = prompts.length > 1;
+        return { content: JSON.stringify({ items: [{ id: "a2", pass: green, why: green ? "ok" : "tests fail" }] }) };
+      },
+      {
+        resolveRunMode: () => mode({ autoVerify: { maxRounds: 0 } }),
+        dispatchVerify: async () => verifyRun(++verifies > 1),
+      },
+    );
+    const result = await buildFusionDelegateTool(d).run(
+      { tasks: TASK, verify: PYTEST },
+      { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+    );
+    // One run before each round; autoverify takes the second, as nothing wrote after it.
+    expect(verifies).toBe(2);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain(
+      "## Run by the runtime after every task finished (a fact, not the workers' words)\n- `python -m pytest -q`: FAILED (exit 1); its output:\n```\nE   NameError: name 'cellers' is not defined",
+    );
+    // After the records, before the call to answer; never in the cached rules.
+    expect(prompts[0]!.indexOf("## Run by the runtime")).toBeGreaterThan(prompts[0]!.indexOf("## Evidence"));
+    expect(prompts[0]!.indexOf("## Run by the runtime")).toBeLessThan(prompts[0]!.indexOf("Answer now"));
+    expect(JUDGE_RULES).not.toContain("Run by the runtime");
+    expect(d.briefs[1]).toContain(
+      "The runtime ran `python -m pytest -q` after every task finished; it failed (exit 1). Part of it may come from another task's files — fix what is in yours:",
+    );
+    expect(d.briefs[1]).toContain("FAILED test_ark.py::test_sum - NameError: name 'cellers' is not defined");
+    const followUp = prompts[1]!.slice(prompts[0]!.length);
+    expect(followUp).toContain(
+      "### Run by the runtime after the retry finished (a fact, not the workers' words)\n- `python -m pytest -q`: passed (exit 0)",
+    );
+    expect(result.summary.split("\n")[0]).toBe("autoverify: PASS after 1 round (exit 0) — `python -m pytest -q`");
+    const row = (result.details.tasks as Array<{ status: string }>)[0]!;
+    expect(row.status).toBe("ok");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("runs the verify once for a green first round, and not at all without a verify (k8b)", async () => {
+    const run = async (withVerify: boolean) => {
+      const dir = mkdtempSync(join(tmpdir(), "judge-pre1-"));
+      const prompts: string[] = [];
+      let verifies = 0;
+      const d = deps(
+        dir,
+        async (call) => {
+          prompts.push(call.prompt);
+          return { content: JSON.stringify({ items: [{ id: "a2", pass: true, why: "ok" }] }) };
+        },
+        {
+          resolveRunMode: () => mode({ autoVerify: { maxRounds: 0 } }),
+          dispatchVerify: async () => verifyRun(++verifies > 0),
+        },
+      );
+      const result = await buildFusionDelegateTool(d).run(
+        { tasks: TASK, ...(withVerify ? { verify: PYTEST } : {}) },
+        { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+      );
+      rmSync(dir, { recursive: true, force: true });
+      return { prompts, verifies, result };
+    };
+    const verified = await run(true);
+    expect(verified.verifies).toBe(1);
+    expect(verified.prompts).toHaveLength(1);
+    expect(verified.prompts[0]).toContain("- `python -m pytest -q`: passed (exit 0)");
+    expect(verified.result.summary.split("\n")[0]).toMatch(/^autoverify: PASS after 1 round/);
+    const plain = await run(false);
+    expect(plain.verifies).toBe(0);
+    expect(plain.prompts[0]).not.toContain("## Run by the runtime after every task finished");
+  });
+
   it("hands the judge each attempt's runtime record: the retry's run, both attempts' writes", async () => {
     const dir = mkdtempSync(join(tmpdir(), "judge-rec-"));
     const prompts: string[] = [];
