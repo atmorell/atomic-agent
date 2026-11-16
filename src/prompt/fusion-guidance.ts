@@ -93,15 +93,20 @@ export const FUSION_GUIDANCE = [
   // its longest task. Paid for by trimming the two lines after it.
   "Plan in the open, then delegate in the same turn — never stop at the plan: list the independent parts, a big one per worker, small ones shared; the longest sets the pace: split an outsized one along a `contract`.",
   "One task per part, in one `fusion.delegate` call; its `files` name the paths it will produce (approved once, so workers can write). Each `instructions` must stand alone: workers see the operator's request, not this chat, and cannot ask.",
-  "You choose `maxWorkers` per call; delegate rather than do any part yourself.",
-  "Tools that change things are refused for you — by design, not a fault.",
+  // k8i (16-11-2026): the judge sent io back once over a 6-decimal
+  // format the brief only described; a worker runs given examples first
+  // (`STDIN_SELF_TEST_RULE`). Paid for by dropping "You choose
+  // `maxWorkers`", which the delegate descriptor already says, and
+  // "do any part yourself", which the refused write tools enforce.
+  "Give the trickiest part 4-6 input -> expected examples the worker runs first.",
+  "Tools that change things are refused for you by design.",
   "Keep the design and the judgement: read every reply against its brief.",
   VERIFY_LINE,
   "Rework goes back out: `failed`, `cancelled`, `needs_orchestrator` or not good enough is another `fusion.delegate` saying what was wrong and what good looks like.",
   // F43: the status table now says `replaced the user's file sales.csv
   // (2,401 → 9 lines)` on the row; this is what to do about it.
   "A task that replaced a pre-existing file is not done until the file is restored (`os.fs.restore` in a worker) or the replacement was asked for.",
-  "Yours alone: the decision you were asked for, a part that only makes sense with this conversation in front of it, anything needing approval.",
+  "Yours alone: the decision you were asked for, a part that only makes sense with this conversation, anything needing approval.",
   "Call `fusion.delegate` on its own, never alongside other calls.",
 ].join("\n");
 
@@ -136,10 +141,13 @@ export function formatFusionMachineLine(
   const lines: string[] = [];
   if (workerSlots !== null) {
     const slots = `${workerSlots} request slot${workerSlots === 1 ? "" : "s"}`;
-    const tasks = `${workerSlots} balanced task${workerSlots === 1 ? "" : "s"}`;
+    const tasks = `${workerSlots} task${workerSlots === 1 ? "" : "s"} balanced by lines to write`;
     // k8f (16-11-2026): five tasks on two slots; the three queued ones
     // each paid their own reading and self-test, and the fan-out ran
     // ~140 s past what two balanced tasks take (Fable, same day).
+    // k8i: "balanced" by part count gave the core task three files; its
+    // first write came at 171 s, its reply at 432 s, while the other
+    // slot sat idle from 228 s. A worker's time is the lines it writes.
     lines.push(
       `This machine: workers run${on} on a local llama-server with ${slots}, so up to ${workerSlots} run at once. Send at most ${tasks} — extras queue and each pays its own reading and self-test; a fan-out lasts ~sum(etaSeconds)/${workerSlots}.`,
     );

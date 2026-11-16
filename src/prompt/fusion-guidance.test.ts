@@ -178,7 +178,8 @@ describe("the machine facts in the ### fusion block", () => {
     expect(prefix).toContain("up to 4 run at once");
     // k8f: tasks beyond the slots queue and each pays its own reading
     // and self-test, so the cap is on tasks, not only on workers.
-    expect(prefix).toContain("Send at most 4 balanced tasks");
+    // k8i: balanced by what a worker writes, not by part count.
+    expect(prefix).toContain("Send at most 4 tasks balanced by lines to write");
     expect(prefix).toContain("~sum(etaSeconds)/4");
     expect(prefix).toContain("`maxWorkers` at most 4");
   });
@@ -222,7 +223,7 @@ describe("the machine facts in the ### fusion block", () => {
     ).toContain("1 request slot,");
     expect(
       buildFusionGuidance(facts({ workerLeg: "local", workerSlots: 1 })),
-    ).toContain("Send at most 1 balanced task —");
+    ).toContain("Send at most 1 task balanced by lines to write —");
   });
 
   it("tells a cloud leg it has no slot limit but pays per step", () => {
@@ -254,14 +255,26 @@ describe("the machine facts in the ### fusion block", () => {
     // conversation the worker will not have. k8f: "prefer sending more
     // parts" read as more tasks — five on two slots — so the push is
     // now to delegate, and the machine line caps the count.
-    expect(FUSION_GUIDANCE).toMatch(/delegate rather than do any part yourself/);
+    // k8i: "delegate rather than do any part yourself" went; the
+    // orchestrator's write tools are refused, which enforces it.
+    expect(FUSION_GUIDANCE).toContain("delegate the doing");
+    expect(FUSION_GUIDANCE).toContain("refused for you by design");
     expect(FUSION_GUIDANCE).not.toMatch(/prefer sending more/i);
     expect(FUSION_GUIDANCE).toContain("independent parts");
     // And to check a fan-out before accepting it, with the tools that can.
     expect(FUSION_GUIDANCE).toContain("`verify.syntax` on the declared files");
     expect(FUSION_GUIDANCE).toContain("`verify.run` on what the request must do");
     expect(FUSION_GUIDANCE).toMatch(/only makes sense with this conversation/i);
-    // And the width is stated as the model's own call.
-    expect(FUSION_GUIDANCE).toMatch(/You choose `maxWorkers`/);
+    // The width is the model's own call: the delegate descriptor says
+    // so, and the machine line bounds it. k8i dropped the repeat here.
+    expect(FUSION_GUIDANCE).not.toMatch(/You choose `maxWorkers`/);
+  });
+
+  it("asks for input -> expected examples on the trickiest part (k8i)", () => {
+    // k8i: the judge sent io back once (~100 s) over `str(r)` giving
+    // '1e-06' where the brief described six decimals in words.
+    expect(FUSION_GUIDANCE).toContain(
+      "Give the trickiest part 4-6 input -> expected examples the worker runs first.",
+    );
   });
 });
