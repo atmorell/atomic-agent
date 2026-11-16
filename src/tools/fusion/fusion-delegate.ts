@@ -74,6 +74,7 @@ import {
 } from "./run-resume.js";
 import {
   applyJudgeVerdict,
+  applyScopeOnlyVerdict,
   buildAcceptanceChecklist,
   judgeEvidencePaths,
   judgeSummary,
@@ -82,9 +83,11 @@ import {
   renderAcceptanceBlock,
   renderRedItems,
   renderRetryFindings,
+  scopeOnlyRed,
   type JudgeSession,
   type JudgeVerdict,
 } from "./judge.js";
+import { strayWrites } from "./contract-inputs.js";
 import { unchangedAcrossAttempts } from "./declared-files.js";
 import { reviewedNote } from "./reviewed-note.js";
 import type { DelegateTask } from "./delegate-args.js";
@@ -1436,6 +1439,14 @@ export function buildFusionDelegateTool(
             // Not run: autoverify runs it after the judge, as before.
           }
         };
+        // What a task wrote that the contract gives no task (Fable 3); a
+        // split task's subtasks ran under their own ids, so none then.
+        const straysOf = (id: string): string[] => {
+          const task = parsed.tasks.find((t) => t.id === id);
+          return task === undefined || !workerCommands.has(id)
+            ? []
+            : strayWrites(task, parsed.contract, workerWrites.get(id) ?? [], ctx.workingDir);
+        };
         const judgeable = (r: WorkerTaskResult): boolean =>
           (acceptance.get(r.id)?.length ?? 0) > 0 &&
           (r.status === "ok" ||
@@ -1477,6 +1488,7 @@ export function buildFusionDelegateTool(
                     record: {
                       runs: workerRuns.get(row.id) ?? [],
                       written: workerWrites.get(row.id) ?? [],
+                      strays: straysOf(row.id),
                     },
                   }
                 : {}),
@@ -1531,15 +1543,28 @@ export function buildFusionDelegateTool(
         const red = [...first].filter(
           ([, v]) => !v.green && v.unverified === undefined,
         );
+        // Fable 3 (k8e): a red for strays alone, with the verify before
+        // the judge passing, is reported, not retried. Read here, before
+        // the retry drops that run.
+        const scopeOnly = new Map<string, string[]>();
+        for (const [id, verdict] of red) {
+          const strays = straysOf(id);
+          if (!scopeOnlyRed(acceptance.get(id) ?? [], verdict, strays, judgedVerify.run)) continue;
+          scopeOnly.set(id, strays);
+          deps.logger.info("fusion: judge red for scope only, not retried", {
+            taskId: id,
+            strays: strays.slice(0, 8),
+          });
+        }
         const retryIds = new Set(
           budgetStop() === undefined && !ctx.signal.aborted
-            ? red.map(([id]) => id)
+            ? red.map(([id]) => id).filter((id) => !scopeOnly.has(id))
             : [],
         );
         let second = new Map<string, JudgeVerdict>();
         if (retryIds.size > 0) {
           const findings = new Map(
-            red.map(([id, verdict]) => [
+            red.filter(([id]) => retryIds.has(id)).map(([id, verdict]) => [
               id,
               renderRetryFindings(acceptance.get(id) ?? [], verdict, judgedVerify.run),
             ]),
@@ -1595,7 +1620,11 @@ export function buildFusionDelegateTool(
             };
           }
           const verdict = first.get(r.id);
-          return verdict === undefined ? r : applyJudgeVerdict(r, verdict, false);
+          if (verdict === undefined) return r;
+          const strays = scopeOnly.get(r.id);
+          return strays === undefined
+            ? applyJudgeVerdict(r, verdict, false)
+            : applyScopeOnlyVerdict(r, verdict, strays, ctx.workingDir);
         });
       }
       // Autoverify (lever F1): the orchestrator's `verify` spec, run through

@@ -29,6 +29,7 @@ import {
   renderJudgePrompt,
   renderRetryFindings,
   renderRuntimeRecord,
+  scopeOnlyRed,
   shareEvidenceBudget,
   type AcceptanceItem,
   type JudgeVerdict,
@@ -908,6 +909,74 @@ describe("a node closes only on a green list (ATO-944)", () => {
     expect(plain.prompts[0]).not.toContain("## Run by the runtime after every task finished");
   });
 
+  // Fable 3 (k8e, 16-11-2026): the core task was red for a test file it
+  // wrote to drive its own code; the verify was green and the retry ran
+  // out the clock.
+  it("reports a red for strays alone with the verify passing, and still retries a defect (Fable 3)", async () => {
+    const run = async (o: { stray: boolean; verifyOk: boolean }) => {
+      const dir = mkdtempSync(join(tmpdir(), "judge-scope-"));
+      const prompts: string[] = [];
+      const d = deps(
+        dir,
+        async (call) => {
+          prompts.push(call.prompt);
+          const green = prompts.length > 1;
+          return {
+            content: JSON.stringify({
+              items: [{ id: "a2", pass: green, why: green ? "ok" : "wrote probe.py outside its files" }],
+            }),
+          };
+        },
+        {
+          resolveRunMode: () => mode({ autoVerify: { maxRounds: 0 } }),
+          dispatchVerify: async () => verifyRun(o.verifyOk),
+        },
+      );
+      d.runTurn = async (_session, message, options) => {
+        d.briefs.push(message);
+        const files = ["a.txt", ...(o.stray && d.briefs.length === 1 ? ["probe.py"] : [])];
+        for (const file of files) {
+          writeFileSync(join(dir, file), "x");
+          options.eventHook?.({
+            type: "llm_event",
+            event: {
+              type: "tool_call_executed",
+              result: { tool: "os.fs.write", status: "ok", summary: `wrote ${file}`, details: { path: join(dir, file) }, truncated: false },
+              batchIndex: 0,
+              batchSize: 1,
+            } as never,
+          });
+        }
+        return {
+          session: createEmptySessionState({ id: "s-w", workingDir: dir }),
+          reason: "reply",
+          stepCount: 1,
+        } as RunTurnResult;
+      };
+      const result = await buildFusionDelegateTool(d).run(
+        { tasks: TASK, verify: PYTEST },
+        { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+      );
+      rmSync(dir, { recursive: true, force: true });
+      const row = (result.details.tasks as Array<{ status: string; notes?: string[] }>)[0]!;
+      return { briefs: d.briefs.length, prompts, row };
+    };
+    const scope = await run({ stray: true, verifyOk: true });
+    expect(scope.briefs).toBe(1);
+    expect(scope.prompts).toHaveLength(1);
+    expect(scope.prompts[0]).toContain("- written outside its declared files, owned by no task: probe.py");
+    expect(scope.row.status).toBe("needs_orchestrator");
+    expect(scope.row.notes?.join(" ")).toContain(
+      "judge: red for scope only, not retried — a2 wrote probe.py outside its files; the fan-out's verify passed and the task wrote probe.py outside its declared files (no task owns them)",
+    );
+    // A failing verify, or a red with nothing stray, is a defect to repair.
+    const failing = await run({ stray: true, verifyOk: false });
+    expect(failing.briefs).toBe(2);
+    const clean = await run({ stray: false, verifyOk: true });
+    expect(clean.briefs).toBe(2);
+    expect(clean.prompts[0]).not.toContain("written outside its declared files");
+  });
+
   it("hands the judge each attempt's runtime record: the retry's run, both attempts' writes", async () => {
     const dir = mkdtempSync(join(tmpdir(), "judge-rec-"));
     const prompts: string[] = [];
@@ -1233,5 +1302,39 @@ describe("one judge call for several tasks", () => {
     expect(parseJudgeAnswer('{"items":[{"id":"a1","pass":true,"why":"ok"}]}')!.get("a1")!.pass).toBe(true);
     expect(parseJudgeAnswer('{"verdict":"green"}')).toBeNull();
     expect(parseJudgeAnswer("null")).toBeNull();
+  });
+});
+
+describe("scopeOnlyRed (Fable 3)", () => {
+  const items: AcceptanceItem[] = [
+    { id: "a1", kind: "file", text: "a.txt exists and is not empty", path: "a.txt", judged: false },
+    { id: "a2", kind: "instructions", text: "the task is done as instructed: x", judged: true },
+  ];
+  const verdict = (red: string[]): JudgeVerdict => ({
+    green: red.length === 0,
+    items: items.map((i) => ({ id: i.id, pass: !red.includes(i.id), why: "w", by: "judge" as const })),
+    costUsd: null,
+  });
+  const passed = { ok: true, exitCode: 0, excerpt: [] };
+  const strays = ["/w/probe.py"];
+
+  it("holds only for a red on the instructions alone, with strays and a passing verify", () => {
+    expect(scopeOnlyRed(items, verdict(["a2"]), strays, passed)).toBe(true);
+    expect(scopeOnlyRed(items, verdict(["a1", "a2"]), strays, passed)).toBe(false);
+    expect(scopeOnlyRed(items, verdict(["a2"]), [], passed)).toBe(false);
+    expect(scopeOnlyRed(items, verdict(["a2"]), strays, { ...passed, ok: false, exitCode: 1 })).toBe(false);
+    expect(scopeOnlyRed(items, verdict(["a2"]), strays, undefined)).toBe(false);
+    expect(scopeOnlyRed(items, verdict([]), strays, passed)).toBe(false);
+    expect(scopeOnlyRed(items, { ...verdict(["a2"]), unverified: "timed out" }, strays, passed)).toBe(false);
+  });
+
+  it("shows the strays to the judge on a line of their own, and no line when there are none", () => {
+    const w = join(tmpdir(), "w");
+    const record = { runs: [], written: [join(w, "a.txt"), join(w, "probe.py")] };
+    expect(renderRuntimeRecord({ ...record, strays: [join(w, "probe.py")] }, w)).toContain(
+      "- files written by the file tools: a.txt, probe.py\n- written outside its declared files, owned by no task: probe.py\n- commands run: none",
+    );
+    expect(renderRuntimeRecord({ ...record, strays: [] }, w)).not.toContain("written outside");
+    expect(renderRuntimeRecord(record, w)).not.toContain("written outside");
   });
 });

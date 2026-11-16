@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   renderContractInputs,
   resolveContractInputs,
+  strayWrites,
 } from "./contract-inputs.js";
 import {
   contractWarnings,
@@ -207,5 +208,54 @@ describe("contract inputs (F51)", () => {
       ),
     ).toEqual([resolve("/repo", "sales.csv"), resolve("/abs/x.json")]);
     expect(resolveContractInputs([], "/repo")).toEqual([]);
+  });
+});
+
+// Fable 3 (k8e, 16-11-2026): the core worker wrote a test file to drive
+// its own code; the judge read it as a stray and the retry ran out the
+// clock with the verify green.
+describe("strayWrites (Fable 3)", () => {
+  const W = resolve("/repo");
+  const at = (path: string): string => resolve(W, path);
+  const task = { id: "core", files: ["pkg/core.py"] };
+  const contract: DelegateContract = {
+    owners: { "pkg/__main__.py": "cli", "pkg/models/": "core" },
+    provides: [
+      { task: "core", kind: "symbol", name: "Store", in: "pkg/store.py" },
+      { task: "cli", kind: "file", name: "pkg/cli.py" },
+    ],
+    inputs: ["data.csv"],
+  };
+
+  it("names what no task is given: not its files, provides or folders, nor another's, nor an input", () => {
+    const written = [
+      at("pkg/core.py"),
+      at("pkg/models/a.py"),
+      at("pkg/store.py"),
+      at("pkg/__main__.py"),
+      at("pkg/cli.py"),
+      at("data.csv"),
+      at("probe.py"),
+      at("probe.py"),
+    ];
+    expect(strayWrites(task, contract, written, W)).toEqual([at("probe.py")]);
+  });
+
+  it("says nothing it cannot tell: nothing declared, a glob, or autoverify's repair", () => {
+    expect(strayWrites({ id: "core" }, undefined, [at("x.py")], W)).toEqual([]);
+    expect(strayWrites(task, { owners: { "tests/*": "tests" } }, [at("x.py")], W)).toEqual([]);
+    expect(
+      strayWrites({ id: "autoverify-repair-1", files: ["a.py"] }, undefined, [at("x.py")], W),
+    ).toEqual([]);
+  });
+
+  it("counts the paths of the task a split task came from as its own", () => {
+    expect(
+      strayWrites({ id: "core/a" }, { owners: { "pkg/": "core" } }, [at("pkg/x.py"), at("y.py")], W),
+    ).toEqual([at("y.py")]);
+  });
+
+  it.runIf(process.platform === "win32")("compares without case on Windows, as the owner guard does", () => {
+    expect(strayWrites(task, undefined, [at("PKG/Core.py")], W)).toEqual([]);
   });
 });

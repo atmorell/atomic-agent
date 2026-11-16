@@ -7,7 +7,7 @@ interface OwnerEntry {
 }
 
 /** A path as owners are compared: normalised, no trailing separator, lower case on Windows. */
-function ownerKey(path: string): string {
+export function ownerKey(path: string): string {
   let key = normalize(path);
   while (key.length > 1 && key.endsWith(sep) && !/^[A-Za-z]:\\$/.test(key)) {
     key = key.slice(0, -1);

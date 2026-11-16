@@ -143,21 +143,35 @@ export const JUDGE_SEVERITY_RULE =
 export interface JudgeRecord {
   runs: readonly WorkerCommandRun[];
   written: readonly string[];
+  /**
+   * Of `written`, what the contract gives no task (`strayWrites`,
+   * Fable 3): shown as a fact on a line of its own, none when empty.
+   */
+  strays?: readonly string[];
+}
+
+/** A path as the judge reads it: relative to the working directory when inside it. */
+function shownPath(path: string, workingDir: string): string {
+  const rel = relative(workingDir, path);
+  return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel)
+    ? rel.replace(/\\/g, "/")
+    : path;
 }
 
 export function renderRuntimeRecord(record: JudgeRecord, workingDir: string): string {
-  const shown = (path: string): string => {
-    const rel = relative(workingDir, path);
-    return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel)
-      ? rel.replace(/\\/g, "/")
-      : path;
-  };
+  const shown = (path: string): string => shownPath(path, workingDir);
   const lines = [
     "## Recorded by the runtime (facts, not the worker's words)",
     record.written.length === 0
       ? "- files written by the file tools: none"
       : `- files written by the file tools: ${record.written.map(shown).join(", ")}`,
   ];
+  const strays = record.strays ?? [];
+  if (strays.length > 0) {
+    lines.push(
+      `- written outside its declared files, owned by no task: ${strays.map(shown).join(", ")}`,
+    );
+  }
   if (record.runs.length === 0) {
     lines.push("- commands run: none that reached its exit");
     return lines.join("\n");
@@ -1239,5 +1253,53 @@ export function applyJudgeVerdict(
     status: "failed",
     judge: summary,
     error: result.error === undefined ? error : `${error}; ${result.error}`,
+  };
+}
+
+/**
+ * A red the retry need not chase (Fable 3, k8e, 16-11-2026): every red
+ * item is the task's own `instructions`, the task wrote files the
+ * contract gives no task (`strayWrites`), and the fan-out's verify ran
+ * before the judge and passed. Live the judge sent the core task back
+ * for a test file it wrote to drive its own code; the retry took 125 s
+ * and ran out the clock while the verify was green. A real defect fails
+ * a check, a provide, a file, the request's item or the verify, and is
+ * retried as before.
+ */
+export function scopeOnlyRed(
+  items: readonly AcceptanceItem[],
+  verdict: JudgeVerdict,
+  strays: readonly string[],
+  verify: JudgeVerifyRun | undefined,
+): boolean {
+  if (verdict.green || verdict.unverified !== undefined) return false;
+  if (strays.length === 0 || verify?.ok !== true) return false;
+  const red = redItems(verdict);
+  return (
+    red.length > 0 &&
+    red.every((v) => items.find((item) => item.id === v.id)?.kind === "instructions")
+  );
+}
+
+/**
+ * Fold a scope-only red into the task's row: not retried and not
+ * failed — the orchestrator, who read the whole job, decides what the
+ * files are for.
+ */
+export function applyScopeOnlyVerdict(
+  result: WorkerTaskResult,
+  verdict: JudgeVerdict,
+  strays: readonly string[],
+  workingDir: string,
+): WorkerTaskResult {
+  const files = strays.map((path) => shownPath(path, workingDir)).join(", ");
+  return {
+    ...result,
+    status: "needs_orchestrator",
+    judge: judgeSummary(verdict, false),
+    notes: [
+      ...(result.notes ?? []),
+      `judge: red for scope only, not retried — ${renderRedItems(verdict)}; the fan-out's verify passed and the task wrote ${files} outside its declared files (no task owns them): keep, move or delete them, or redelegate if the finding is a real defect`,
+    ],
   };
 }

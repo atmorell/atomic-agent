@@ -1,4 +1,8 @@
+import { sep } from "node:path";
 import { resolveUserPath } from "../os/expand-home.js";
+import { ownerKey } from "../os/fs/fs-declared-inputs.js";
+import type { DelegateContract } from "./contract.js";
+import type { DelegateTask } from "./delegate-args.js";
 
 /**
  * The contract's `inputs` (F51): the files the operator provided, which
@@ -121,6 +125,66 @@ export function resolveContractInputs(
     } catch {
       // A path the tools could not resolve is one they could not write.
     }
+  }
+  return out;
+}
+
+/**
+ * What a task wrote that the contract gives no task (Fable 3, k8e): not
+ * in its `files`, not where a provide of its lives, not under a path it
+ * owns — nor under a path another task owns or provides, nor an
+ * operator input. Live the core worker wrote a test file to drive its
+ * own code; the judge read it as a stray and the retry ran out the clock
+ * with the verify green. The judge reads these as a fact, and a red for
+ * them alone is reported rather than retried (`scopeOnlyRed`, judge.ts).
+ *
+ * Empty when it cannot be told: a task that declares nothing has no
+ * outside, a glob anywhere makes "owned by no task" a guess, and
+ * autoverify's repair worker repairs across owners. Paths compare as
+ * the owner guard compares them (`ownerKey`): a folder holds what is
+ * under it, and case does not count on Windows.
+ */
+export function strayWrites(
+  task: Pick<DelegateTask, "id" | "files">,
+  contract: Pick<DelegateContract, "owners" | "provides" | "inputs"> | undefined,
+  written: readonly string[],
+  workingDir: string,
+): string[] {
+  if (task.id.startsWith(AUTOVERIFY_REPAIR_PREFIX)) return [];
+  const own: string[] = [...(task.files ?? [])];
+  const others: string[] = [...(contract?.inputs ?? [])];
+  for (const provide of contract?.provides ?? []) {
+    const where = [
+      ...(provide.in === undefined ? [] : [provide.in]),
+      ...(provide.kind === "file" ? [provide.name] : []),
+    ];
+    (provide.task === task.id ? own : others).push(...where);
+  }
+  for (const [path, owner] of Object.entries(contract?.owners ?? {})) {
+    (owner === task.id || task.id.startsWith(`${owner}/`) ? own : others).push(path);
+  }
+  if (own.length === 0 || [...own, ...others].some((path) => GLOB_CHARS.test(path))) {
+    return [];
+  }
+  const keyOf = (path: string): string | null => {
+    try {
+      return ownerKey(resolveUserPath(path, workingDir));
+    } catch {
+      return null;
+    }
+  };
+  const roots = [...own, ...others]
+    .map(keyOf)
+    .filter((key): key is string => key !== null);
+  const within = (key: string, root: string): boolean =>
+    key === root || key.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const path of written) {
+    const key = keyOf(path);
+    if (key === null || seen.has(key)) continue;
+    seen.add(key);
+    if (!roots.some((root) => within(key, root))) out.push(path);
   }
   return out;
 }
