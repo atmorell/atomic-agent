@@ -62,8 +62,9 @@ const SPLIT_TOOL_CALL_RULE_RE = new RegExp(
  * request admits, and lists the other names in `tool-name`. A branch with
  * nothing to carry is dropped from `tool-call` (an empty alternation is
  * not valid GBNF); `tool-name` is then left as it was, an unreferenced
- * rule llama.cpp still parses. A grammar without the split gets every
- * name in `tool-name`.
+ * rule llama.cpp still parses. `work-call` gets the same branches but
+ * `reply-call` (`withWorkCallRule`). A grammar without the split gets
+ * every name in `tool-name`.
  */
 export function narrowToolCallRules(grammar: string, names: string[]): string {
   if (!SPLIT_TOOL_CALL_RULE_RE.test(grammar)) return replaceToolNameRule(grammar, names);
@@ -76,8 +77,31 @@ export function narrowToolCallRules(grammar: string, names: string[]): string {
   }
   const others = names.filter((name) => !carried.has(name));
   if (others.length > 0) branches.push("other-call");
-  const narrowed = grammar.replace(SPLIT_TOOL_CALL_RULE_RE, `tool-call ::= ${branches.join(" | ")}`);
+  const narrowed = withWorkCallRule(
+    grammar.replace(SPLIT_TOOL_CALL_RULE_RE, `tool-call ::= ${branches.join(" | ")}`),
+    branches.slice(1),
+  );
   return others.length > 0 ? replaceToolNameRule(narrowed, others) : narrowed;
+}
+
+const WORK_CALL_RULE_RE = /^work-call ::= .*$/m;
+const TOOL_CALL_ARRAY_RULE_RE = /^tool-call-array ::= .*$/m;
+const SOLO_TOOL_CALL_ARRAY_RULE = 'tool-call-array ::= "[" ws tool-call ws "]"';
+
+/**
+ * `work-call` is every call of `tool-call-array` but the last, so
+ * `reply` can only close the array, which is where the batch validator
+ * wants a terminal (k8j, 16-11-2026: a refused `[reply, os.shell.run]`
+ * cost a worker a repair and a turn retry, ~50 s). It carries the
+ * request's branches without `reply-call`; with none left (`reply`
+ * alone) the array is one call long and `work-call` goes unreferenced.
+ * A grammar without the rule (an older file) is returned as it was.
+ */
+function withWorkCallRule(grammar: string, workBranches: string[]): string {
+  if (!WORK_CALL_RULE_RE.test(grammar)) return grammar;
+  return workBranches.length > 0
+    ? grammar.replace(WORK_CALL_RULE_RE, `work-call ::= ${workBranches.join(" | ")}`)
+    : grammar.replace(TOOL_CALL_ARRAY_RULE_RE, SOLO_TOOL_CALL_ARRAY_RULE);
 }
 
 function replaceToolNameRule(grammar: string, names: string[]): string {

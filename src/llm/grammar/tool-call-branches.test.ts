@@ -343,3 +343,42 @@ describe("the tools small models use most need their required args (ATO-1114)", 
     expect(grammarToolNames(g)).toEqual([...tools, "reply"].sort());
   });
 });
+
+describe("only the last call of an array may be reply (k8j)", () => {
+  const r = (text: string): string => JSON.stringify({ tool: "reply", args: { text } });
+  const hash = JSON.stringify({ tool: "os.fs.hash", args: { path: "a" } });
+  const shell = JSON.stringify({ tool: "os.shell.run", args: { cmd: "python a.py" } });
+  const arr = (...calls: string[]): string => `[${calls.join(",")}]`;
+
+  it("refuses reply before other calls and keeps it at the tail", async () => {
+    // k8j (16-11-2026): a worker emitted `[reply, os.shell.run]`, the
+    // batch validator refused it, and repair plus retry cost ~50 s.
+    for (const [id, grammar] of await allGrammars()) {
+      expect(gbnfAccepts(grammar, "root", arr(r("done"))), id).toBe(true);
+      expect(gbnfAccepts(grammar, "root", arr(hash, r("done"))), id).toBe(true);
+      expect(gbnfAccepts(grammar, "root", arr(hash, hash)), id).toBe(true);
+      expect(gbnfAccepts(grammar, "root", arr(r("done"), hash)), id).toBe(false);
+      expect(gbnfAccepts(grammar, "root", arr(hash, r("a"), hash)), id).toBe(false);
+      expect(gbnfAccepts(grammar, "root", arr(r("a"), r("b"))), id).toBe(false);
+    }
+    const coding = buildGrammarForTools(await buildGrammar(PLAIN_INSTRUCT_PROFILE), ["os.shell.run"]);
+    expect(coding).toMatch(/^work-call ::= shell-call$/m);
+    expect(gbnfAccepts(coding, "root", arr(shell, r("ran it")))).toBe(true);
+    expect(gbnfAccepts(coding, "root", arr(r("ran it"), shell))).toBe(false);
+  });
+
+  it("keeps the 16-call ceiling", async () => {
+    for (const [id, grammar] of await allGrammars()) {
+      expect(gbnfAccepts(grammar, "root", arr(...Array(15).fill(hash), r("ok"))), id).toBe(true);
+      expect(gbnfAccepts(grammar, "root", arr(...Array(16).fill(hash))), id).toBe(true);
+      expect(gbnfAccepts(grammar, "root", arr(...Array(16).fill(hash), r("ok"))), id).toBe(false);
+    }
+  });
+
+  it("the static work-call is tool-call without reply-call", async () => {
+    const lines = (await readFile(GRAMMAR_FILE, "utf8")).split("\n");
+    const rule = (name: string): string => (lines.find((l) => l.startsWith(`${name} ::= `)) ?? "").slice(name.length + 5);
+    expect(rule("work-call")).not.toBe("");
+    expect(`reply-call | ${rule("work-call")}`).toBe(rule("tool-call"));
+  });
+});

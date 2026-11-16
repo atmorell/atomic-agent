@@ -605,7 +605,8 @@ describe("the reasoning budget (F49)", () => {
       const narrowed = buildGrammarForTools(variant, ["finish"]);
       expect(grammarToolNames(narrowed)).toEqual(["finish", "reply"]);
       // the rewrite touches tool-name and, for the shell branch, tool-call
-      const strip = (g: string): string => g.replace(/^tool-name ::= .*$/m, "").replace(/^tool-call ::= .*$/m, "");
+      const strip = (g: string): string =>
+        g.replace(/^tool-name ::= .*$/m, "").replace(/^tool-call ::= .*$/m, "").replace(/^work-call ::= .*$/m, "");
       expect(strip(narrowed)).toBe(strip(variant));
       expect(narrowed).toMatch(/^tool-call ::= reply-call \| other-call$/m);
     }
@@ -790,6 +791,9 @@ describe("buildGrammarForTools — the per-request grammar", () => {
         } else if (baseLines[i]!.startsWith("tool-call ::=")) {
           // No tool with a dedicated branch is in this set, so those branches are dropped.
           expect(narrowedLines[i], profile.id).toBe("tool-call ::= reply-call | other-call");
+        } else if (baseLines[i]!.startsWith("work-call ::=")) {
+          // The same branches but `reply-call`: reply only closes the array.
+          expect(narrowedLines[i], profile.id).toBe("work-call ::= other-call");
         } else {
           expect(narrowedLines[i], profile.id).toBe(baseLines[i]);
         }
@@ -836,6 +840,9 @@ describe("buildGrammarForTools — the per-request grammar", () => {
       const only = buildGrammarForTools(base, names);
       expect(grammarToolNames(only), JSON.stringify(names)).toEqual(["reply"]);
       expect(only, JSON.stringify(names)).toMatch(/^tool-call ::= reply-call$/m);
+      // No work branch left: the array is one call long.
+      expect(only).toContain('tool-call-array ::= "[" ws tool-call ws "]"\n');
+      expect(gbnfAccepts(only, "root", '[{"tool":"reply","args":{"text":"a"}},{"tool":"reply","args":{"text":"b"}}]')).toBe(false);
       expect(gbnfAccepts(only, "root", '[{"tool":"reply","args":{"text":"ok"}}]')).toBe(true);
       expect(gbnfAccepts(only, "root", '[{"tool":"finish","args":{"summary":"ok"}}]')).toBe(false);
     }
