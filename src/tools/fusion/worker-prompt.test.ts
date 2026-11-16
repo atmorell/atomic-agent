@@ -14,8 +14,10 @@ import {
   FOLLOW_UP_MAX_CHARS,
   ORIGINAL_REQUEST_CHAR_BUDGET,
   pickOriginalRequest,
+  renderStartListing,
   renderWorkerBrief,
   siblingFilesRule,
+  START_LISTING_LIMIT,
 } from "./worker-prompt.js";
 import {
   FUSION_WORKER_APPROVAL_MARKER,
@@ -397,5 +399,35 @@ describe("renderWorkerBrief — declared inputs (F51)", () => {
     );
     expect(inputsAt).toBeLessThan(brief.indexOf("For TASK t1:"));
     expect(brief).toContain("You own: report.md");
+  });
+});
+
+describe("renderWorkerBrief — the working directory at start (k8d, 16-11-2026)", () => {
+  it("says an empty working directory is empty, so the first step need not list it", () => {
+    const brief = renderWorkerBrief(TASK, { workingDir: "/repo", startEntries: [] });
+    expect(brief).toContain("AT START: /repo is empty — there is nothing in it to list or read.");
+    expect(brief.indexOf("AT START:")).toBeLessThan(brief.indexOf("RULES:"));
+  });
+
+  it("names the top level and asks not to list it again", () => {
+    const brief = renderWorkerBrief(TASK, {
+      workingDir: "/repo",
+      startEntries: ["ark/", "test_ark.py"],
+    });
+    expect(brief).toContain(
+      "AT START: /repo holds (top level, a directory ends in /): ark/, test_ark.py. Do not list it again; list only a directory below it you need.",
+    );
+  });
+
+  it("caps a long top level and counts the rest", () => {
+    const entries = Array.from({ length: START_LISTING_LIMIT + 3 }, (_, i) => `f${String(i).padStart(2, "0")}.txt`);
+    const line = renderStartListing("/repo", entries)!;
+    expect(line).toContain(`f${String(START_LISTING_LIMIT - 1).padStart(2, "0")}.txt, +3 more.`);
+    expect(line).not.toContain(`f${START_LISTING_LIMIT}.txt`);
+  });
+
+  it("renders nothing when the directory could not be listed", () => {
+    expect(renderStartListing("/repo", undefined)).toBeUndefined();
+    expect(renderWorkerBrief(TASK, { workingDir: "/repo" })).not.toContain("AT START:");
   });
 });

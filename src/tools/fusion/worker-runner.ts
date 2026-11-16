@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import type { AgentLoopEvent, RunTurnResult } from "../../agent/agent-contract.js";
 import type { ReasoningEffort } from "../../llm/provider/completion-types.js";
 import type { ApprovalGate } from "../../approval/approval-gate.js";
@@ -741,6 +742,27 @@ export async function runWorkerTasks(
   return results;
 }
 
+/**
+ * The working directory's top level as the worker is dispatched, for
+ * the brief's `AT START` line (`renderStartListing`, k8d): `.git` left
+ * out, a directory marked with a trailing `/`, sorted by name. Never
+ * throws — a directory that cannot be read renders no line. Synchronous
+ * on purpose: one directory level is cheap, and an awaited read here
+ * would put real I/O between a dispatch and its first step, which the
+ * fake-timer tests of this runner cannot step through.
+ */
+function listStartEntries(dir: string): string[] | undefined {
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    return entries
+      .filter((e) => e.name !== ".git")
+      .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  } catch {
+    return undefined;
+  }
+}
+
 async function runOneTask(
   deps: WorkerRunnerDeps,
   options: RunWorkerTasksOptions,
@@ -1010,8 +1032,10 @@ async function runOneTask(
   armWorkerSession(session.id);
 
   const suffix = options.briefSuffix?.(task.id);
+  const startEntries = listStartEntries(workingDir);
   const brief = `${renderWorkerBrief(task, {
     workingDir,
+    ...(startEntries === undefined ? {} : { startEntries }),
     ...(options.originalRequest === undefined
       ? {}
       : { originalRequest: options.originalRequest }),

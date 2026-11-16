@@ -202,12 +202,38 @@ export function formatRewriteSteer(path: string): string {
   return `You just wrote ${path} whole again although you had already written it in this task. For every further change to a file you wrote, use \`os.fs.edit\` with only the lines that change — a whole-file rewrite costs minutes here.`;
 }
 
+/**
+ * Measured (k8d, 16-11-2026): both local workers of a fan-out into an
+ * empty folder spent their first step on `os.fs.list` of it, and the
+ * core worker — the task that set the pace — listed it again in its
+ * second: 36 s of a 401 s run, since every step pays the thinking cap.
+ * The runtime lists the working directory's top level as the worker is
+ * dispatched (a later wave sees its providers' files), and the brief
+ * carries it so the first step can be real work.
+ */
+export const START_LISTING_LIMIT = 40;
+
+export function renderStartListing(
+  workingDir: string,
+  entries: readonly string[] | undefined,
+): string | undefined {
+  if (entries === undefined) return undefined;
+  if (entries.length === 0) {
+    return `AT START: ${workingDir} is empty — there is nothing in it to list or read.`;
+  }
+  const shown = entries.slice(0, START_LISTING_LIMIT);
+  const more = entries.length - shown.length;
+  return `AT START: ${workingDir} holds (top level, a directory ends in /): ${shown.join(", ")}${more > 0 ? `, +${more} more` : ""}. Do not list it again; list only a directory below it you need.`;
+}
+
 export function renderWorkerBrief(
   task: DelegateTask,
   options: {
     workingDir: string;
     originalRequest?: string;
     contract?: DelegateContract;
+    /** The working directory's top level at dispatch, `.git` left out; undefined renders nothing. */
+    startEntries?: readonly string[];
   },
 ): string {
   const request = options.originalRequest?.trim() ?? "";
@@ -226,6 +252,8 @@ export function renderWorkerBrief(
   if (task.files && task.files.length > 0) {
     lines.push(``, `FILES:`, ...task.files.map((f) => `- ${f}`));
   }
+  const listing = renderStartListing(options.workingDir, options.startEntries);
+  if (listing !== undefined) lines.push(``, listing);
   lines.push(
     ``,
     `RULES:`,
