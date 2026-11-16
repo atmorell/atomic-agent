@@ -20,6 +20,7 @@ import {
   SLOW_PASS_RULE,
   NAMED_CASES_RULE,
   formatRunBeforeRereadSteer,
+  formatRunFirstSteer,
   siblingFilesRule,
   START_LISTING_LIMIT,
   STDIN_SELF_TEST_RULE,
@@ -171,6 +172,8 @@ describe("renderWorkerBrief — siblings and browser code (ATO-919)", () => {
     expect(RUN_BEFORE_REREAD_RULE).toMatch(/run it once/);
     expect(formatRunBeforeRereadSteer("/w/formel.py")).toContain("/w/formel.py");
     expect(formatRunBeforeRereadSteer("/w/formel.py")).toContain("`stdin`");
+    expect(formatRunFirstSteer("/w/formel.py")).toMatch(/\/w\/formel\.py again and have run nothing yet/);
+    expect(formatRunFirstSteer("/w/formel.py")).toContain("its findings");
   });
 
   it("tells the worker a slow pass has not passed (k8k)", () => {

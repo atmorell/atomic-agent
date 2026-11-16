@@ -586,6 +586,39 @@ describe("the advisor sees the worker's evidence and is asked for one edit (k8h)
     expect(own.h.calls).toEqual(["cloud"]);
   });
 
+  it("steers a worker that re-reads a module before running anything, once (k8p)", async () => {
+    // k8p: the judge's retry worker read formel.py six times before its
+    // first run; the advisor could only say it had run nothing yet.
+    const read = (path: string) => executed("os.fs.read", "ok", "read", { path });
+    const scenario = (first: "run" | "read", path = "/repo/ark/formel.py") => {
+      const h = harness(async (_s, options) => {
+        const hook = options.eventHook;
+        if (first === "run") hook?.(executed("os.shell.run", "error", "Traceback", { exitCode: 1 }));
+        hook?.(read(path));
+        hook?.(read("/repo/ark/ark.py"));
+        hook?.({ type: "step_finished", stepIndex: 0, summary: "", durationMs: 1 } as AgentLoopEvent);
+        hook?.(read(path));
+        hook?.(read(path));
+        await flush();
+        return done();
+      });
+      return h;
+    };
+    const never = scenario("read");
+    await runWorkerTasks(never.deps, { ...BASE, tasks: TASK, signal: new AbortController().signal });
+    expect(never.steers.filter((s) => s.includes("have run nothing yet"))).toEqual([
+      expect.stringContaining("/repo/ark/formel.py again"),
+    ]);
+
+    const ran = scenario("run");
+    await runWorkerTasks(ran.deps, { ...BASE, tasks: TASK, signal: new AbortController().signal });
+    expect(ran.steers.filter((s) => s.includes("run nothing yet"))).toEqual([]);
+
+    const notes = scenario("read", "/repo/NOTES.md");
+    await runWorkerTasks(notes.deps, { ...BASE, tasks: TASK, signal: new AbortController().signal });
+    expect(notes.steers.filter((s) => s.includes("run nothing yet"))).toEqual([]);
+  });
+
   it("asks no advisor with too little of the worker's time left to use the hint", async () => {
     const h = harness(async (_s, options) => {
       for (let i = 0; i < 6; i += 1) sameStep(options.eventHook, i);

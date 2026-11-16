@@ -36,6 +36,7 @@ import type { DeclaredInputsRegistry } from "../os/fs/fs-declared-inputs.js";
 import {
   formatRewriteSteer,
   formatRunBeforeRereadSteer,
+  formatRunFirstSteer,
   renderWorkerBrief,
   WORKER_REPLY_CHAR_BUDGET,
 } from "./worker-prompt.js";
@@ -1306,7 +1307,11 @@ async function runOneTask(
   // A read of a module this worker wrote with no run since (k8h: written
   // at 119 s, read back three times, first run at 303 s) is steered once
   // toward running it. Any `os.shell.run` counts: the worker chose it.
+  // A second read of one module by a worker that has run nothing at all
+  // is steered the same way (k8p: a retry worker read six times first).
   const notRunSinceWrite = new Set<string>();
+  const readBeforeAnyRun = new Set<string>();
+  let ranAnything = false;
   let rereadSteered = false;
   const checkRunBeforeReread = (
     tool: string,
@@ -1315,6 +1320,7 @@ async function runOneTask(
   ): void => {
     if (tool === "os.shell.run") {
       notRunSinceWrite.clear();
+      ranAnything = true;
       return;
     }
     if (status !== "ok") return;
@@ -1326,11 +1332,20 @@ async function runOneTask(
     }
     if (rereadSteered || tool !== "os.fs.read" || deps.steerWorker === undefined) return;
     const path = typeof details?.path === "string" ? details.path : undefined;
-    if (path === undefined || !notRunSinceWrite.has(pathKey(path))) return;
-    rereadSteered = deps.steerWorker(session.id, formatRunBeforeRereadSteer(path));
+    if (path === undefined) return;
+    const key = pathKey(path);
+    const sinceWrite = notRunSinceWrite.has(key);
+    const neverRun = !ranAnything && RUNNABLE_MODULE.test(path) && readBeforeAnyRun.has(key);
+    if (!ranAnything) readBeforeAnyRun.add(key);
+    if (!sinceWrite && !neverRun) return;
+    rereadSteered = deps.steerWorker(
+      session.id,
+      sinceWrite ? formatRunBeforeRereadSteer(path) : formatRunFirstSteer(path),
+    );
     deps.logger?.info("fusion: worker steered to run before re-reading", {
       taskId: task.id,
       path,
+      ...(sinceWrite ? {} : { ranNothing: true }),
       steered: rereadSteered,
     });
   };

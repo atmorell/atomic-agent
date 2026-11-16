@@ -244,6 +244,15 @@ export function formatRunBeforeRereadSteer(path: string): string {
   return `You are reading ${path} again without having run it since you wrote it. Run it first: one \`os.shell.run\` with a short script on \`stdin\` that imports it and calls the part in doubt. Then read only the lines the error names.`;
 }
 
+/**
+ * k8p (16-11-2026): the judge's retry worker read `formel.py` six times
+ * over six steps (377-445 s) before its first run; the advisor its stall
+ * asked could only answer that it had run nothing yet.
+ */
+export function formatRunFirstSteer(path: string): string {
+  return `You are reading ${path} again and have run nothing yet in this task. Run first: one \`os.shell.run\` with a short script on \`stdin\` that calls the case in doubt (the one your task or its findings name). Then read only the lines the error names.`;
+}
+
 /** The one steer sent when a worker rewrites a file it wrote itself. */
 export function formatRewriteSteer(path: string): string {
   return `You just wrote ${path} whole again although you had already written it in this task. For every further change to a file you wrote, use \`os.fs.edit\` with only the lines that change — a whole-file rewrite costs minutes here.`;
