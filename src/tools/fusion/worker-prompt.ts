@@ -288,30 +288,69 @@ function describeCheckSpec(check: Readonly<Record<string, unknown>>): string {
 }
 
 /**
+ * A failing check's standing after the same failure came back from runs
+ * after successive changes (`worker-runner.ts`): the second time it
+ * carries a doubt, the third time a stop, after that it is left out.
+ * Measured (k8z, 16-11-2026): one wrong assert in the orchestrator's
+ * check (`#CYKEL` is right, the check wanted 0) was steered into the core
+ * worker 8 times until the run hit its 600 s limit.
+ */
+export type CheckRepeatState = "doubt" | "stop" | "silent";
+
+export const CHECK_DOUBT_NOTE =
+  "Your last change did not move this failure. Compare the failing assert with your task text: if the code is wrong, fix it; if the check asks for something your task text does not, do not edit for it.";
+export const CHECK_STOP_NOTE =
+  "It failed the same way three times: stop working on it. The judge sees it; do not edit for it again.";
+
+/**
+ * A failure's identity across runs: its detail without the run's timing
+ * and the throwaway copy's directories, which differ on every run.
+ */
+export function checkFailureSignature(detail: string): string {
+  return detail
+    .replace(/\b\d+(?:\.\d+)? ?(?:ms|s)\b/g, "#")
+    .replace(/(?:[A-Za-z]:)?[\\/](?:[^\s"'`\\/]+[\\/])+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * The steer carrying the runtime's run of a worker's own checks after a
  * change: the first failures with their output, or that all passed.
- * `outcomes` are index-aligned with `checks` (`runContractChecks`).
+ * `outcomes` are index-aligned with `checks` (`runContractChecks`);
+ * `repeats` holds the standing of a check whose failure came back
+ * unchanged. Not called when every failing check is `silent`.
  */
 export function formatCheckResultSteer(
   checks: readonly Readonly<Record<string, unknown>>[],
   outcomes: readonly { ok: boolean; detail: string }[],
+  repeats: ReadonlyMap<number, CheckRepeatState> = new Map(),
 ): string {
   const total = outcomes.length;
   const failed = outcomes
-    .map((outcome, i) => ({ outcome, check: checks[i] ?? {} }))
+    .map((outcome, i) => ({ outcome, check: checks[i] ?? {}, state: repeats.get(i) }))
     .filter(({ outcome }) => !outcome.ok);
   if (failed.length === 0) {
     return `The runtime ran your task's ${total} check${total === 1 ? "" : "s"} after your last change: all passed. If every part of your task is written, reply now — do not read your files again or re-run the checks. Run only a case your task names that no check covers.`;
   }
-  const shown = failed
+  const line = ({ outcome, check }: (typeof failed)[number]) =>
+    `- \`${describeCheckSpec(check)}\`: ${outcome.detail}`;
+  const open = failed.filter(({ state }) => state === undefined || state === "doubt");
+  const stopped = failed.filter(({ state }) => state === "stop");
+  const silent = failed.length - open.length - stopped.length;
+  const shown = open
     .slice(0, CHECK_STEER_MAX_FAILURES)
-    .map(({ outcome, check }) => `- \`${describeCheckSpec(check)}\`: ${outcome.detail}`);
-  const more = failed.length - shown.length;
+    .map((entry) => (entry.state === "doubt" ? `${line(entry)}\n  ${CHECK_DOUBT_NOTE}` : line(entry)));
+  const more = open.length - shown.length;
   return [
     `The runtime ran your task's checks after your last change: ${failed.length} of ${total} failed.`,
     ...shown,
     ...(more > 0 ? [`- +${more} more failing`] : []),
-    `Fix the first failure with \`os.fs.edit\`; the runtime runs the checks again after your next change, so do not run them yourself.`,
+    ...stopped.map((entry) => `${line(entry)}\n  ${CHECK_STOP_NOTE}`),
+    ...(silent > 0 ? [`- +${silent} failing that you were told to stop working on — leave ${silent === 1 ? "it" : "them"}`] : []),
+    open.length > 0
+      ? `Fix the first failure with \`os.fs.edit\`; the runtime runs the checks again after your next change, so do not run them yourself.`
+      : `Nothing else fails: reply now, naming each check you stopped on and what your task text says about it.`,
   ].join("\n");
 }
 

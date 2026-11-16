@@ -12,7 +12,13 @@ import { runWorkerTasks, type WorkerRunnerDeps } from "./worker-runner.js";
 import type { ContractCheckRunner } from "./contract-checks.js";
 import type { DelegateContract } from "./contract.js";
 import type { DelegateTask } from "./delegate-args.js";
-import { CHECKS_RUN_BY_RUNTIME_RULE, formatCheckResultSteer } from "./worker-prompt.js";
+import {
+  CHECK_DOUBT_NOTE,
+  CHECK_STOP_NOTE,
+  CHECKS_RUN_BY_RUNTIME_RULE,
+  checkFailureSignature,
+  formatCheckResultSteer,
+} from "./worker-prompt.js";
 
 /**
  * The runtime runs a worker's own contract checks after a step that
@@ -191,6 +197,71 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     expect(h.readAt[1]![0]).toContain("1 of 2 failed");
   });
 
+  // The same failure on every run, with the run's timing and throwaway copy varying.
+  const same = (n: number) => ({
+    ok: false,
+    error: `Traceback: File "C:\\Temp\\fusion-check-${n}\\core.py", line 3 AssertionError exit 1 after ${100 + n * 37} ms`,
+  });
+  const writeCore = (steps: number): Step[] => [
+    { writes: ["core.py", "cli.py"] },
+    ...Array.from({ length: steps - 1 }, () => ({ writes: ["core.py"] })),
+    {},
+  ];
+
+  it("doubts a failure that came back unchanged, stops it the third time, then goes silent", async () => {
+    const { runner, calls } = fakeRunner([1, 2, 3, 4].map((n) => [same(n), { ok: true }]));
+    const h = harness(dir, writeCore(4), runner);
+    await run(h.deps);
+    expect(calls).toHaveLength(4);
+    expect(h.readAt[1]![0]).toContain("1 of 2 failed");
+    expect(h.readAt[1]![0]).not.toContain(CHECK_DOUBT_NOTE);
+    expect(h.readAt[2]![0]).toContain(CHECK_DOUBT_NOTE);
+    expect(h.readAt[3]![0]).toContain(CHECK_STOP_NOTE);
+    expect(h.readAt[3]![0]).toContain("Nothing else fails: reply now");
+    expect(h.readAt[4]).toEqual([]);
+  });
+
+  it("never escalates a failure that changes", async () => {
+    const { runner } = fakeRunner(
+      [1, 2, 3, 4].map((line) => [{ ok: false, error: `AssertionError on line ${line}` }, { ok: true }]),
+    );
+    const h = harness(dir, writeCore(4), runner);
+    await run(h.deps);
+    for (const step of [1, 2, 3, 4]) {
+      expect(h.readAt[step]![0]).toContain("1 of 2 failed");
+      expect(h.readAt[step]![0]).not.toContain(CHECK_DOUBT_NOTE);
+      expect(h.readAt[step]![0]).not.toContain(CHECK_STOP_NOTE);
+    }
+  });
+
+  it("steers only a new failure next to one the worker was told to stop on", async () => {
+    const { runner } = fakeRunner([
+      ...[1, 2, 3].map((n) => [same(n), { ok: true }]),
+      [same(4), { ok: false, error: "exit 2: usage" }],
+    ]);
+    const h = harness(dir, writeCore(4), runner);
+    await run(h.deps);
+    const text = h.readAt[4]![0]!;
+    expect(text).toContain("2 of 2 failed");
+    expect(text).toContain("- `python core.py --bad`: exit 2: usage");
+    expect(text).not.toContain("line 3 AssertionError");
+    expect(text).toContain("- +1 failing that you were told to stop working on — leave it");
+    expect(text).toContain("Fix the first failure");
+  });
+
+  it("starts over when a stopped check passes and then fails again", async () => {
+    const { runner } = fakeRunner([
+      ...[1, 2, 3].map((n) => [same(n), { ok: true }]),
+      [{ ok: true }, { ok: true }],
+      [same(5), { ok: true }],
+    ]);
+    const h = harness(dir, writeCore(5), runner);
+    await run(h.deps);
+    expect(h.readAt[4]![0]).toContain("all passed");
+    expect(h.readAt[5]![0]).toContain("1 of 2 failed");
+    expect(h.readAt[5]![0]).not.toContain(CHECK_DOUBT_NOTE);
+  });
+
   it("tells the worker in its brief only when the runtime will run them", async () => {
     const { runner } = fakeRunner([[{ ok: true }, { ok: true }]]);
     const wired = harness(dir, [{}], runner);
@@ -224,5 +295,47 @@ describe("formatCheckResultSteer", () => {
     const text = formatCheckResultSteer(checks.slice(0, 1), [{ ok: true, detail: "passed" }]);
     expect(text).toContain("1 check after your last change: all passed");
     expect(text).toContain("reply now");
+  });
+
+  it("puts the doubt under a repeated failure and the stop after the open ones", () => {
+    const outcomes = checks.slice(0, 3).map(() => ({ ok: false, detail: "exit 1" }));
+    const text = formatCheckResultSteer(
+      checks.slice(0, 3),
+      outcomes,
+      new Map([
+        [0, "stop"],
+        [1, "doubt"],
+      ] as const),
+    );
+    expect(text).toBe(
+      [
+        "The runtime ran your task's checks after your last change: 3 of 3 failed.",
+        '- `{"kind":"service","port":8000}`: exit 1',
+        `  ${CHECK_DOUBT_NOTE}`,
+        "- `python a.py`: exit 1",
+        "- `python -c assert 1`: exit 1",
+        `  ${CHECK_STOP_NOTE}`,
+        "Fix the first failure with `os.fs.edit`; the runtime runs the checks again after your next change, so do not run them yourself.",
+      ].join("\n"),
+    );
+  });
+});
+
+describe("checkFailureSignature", () => {
+  it("ignores the run's timing and the throwaway copy's directories", () => {
+    const a = checkFailureSignature(
+      'verify.run command: FAILED exit 1 after 129 ms stderr (tail): File "C:\\Users\\a\\Temp\\fv-1x\\core.py", line 3',
+    );
+    const b = checkFailureSignature(
+      'verify.run command: FAILED exit 1 after 4071 ms stderr (tail): File "C:\\Users\\a\\Temp\\fv-9q\\core.py", line 3',
+    );
+    expect(a).toBe(b);
+    expect(a).toContain('File "core.py", line 3');
+    expect(checkFailureSignature("/tmp/fv-1/src/core.py line 3  x")).toBe("core.py line 3 x");
+  });
+
+  it("keeps what tells two failures apart", () => {
+    expect(checkFailureSignature("core.py, line 3")).not.toBe(checkFailureSignature("core.py, line 4"));
+    expect(checkFailureSignature("assert 0.0 == '#CYKEL'")).not.toBe(checkFailureSignature("assert 0.0 == 1.0"));
   });
 });

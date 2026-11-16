@@ -39,6 +39,8 @@ import {
 } from "./declared-files.js";
 import type { DeclaredInputsRegistry } from "../os/fs/fs-declared-inputs.js";
 import {
+  type CheckRepeatState,
+  checkFailureSignature,
   formatCheckResultSteer,
   formatRewriteSteer,
   formatRunBeforeRereadSteer,
@@ -1405,6 +1407,28 @@ async function runOneTask(
   let changedSinceCheck = false;
   let pendingCheck: Promise<void> | undefined;
   let lastCheckSteer: string | undefined;
+  // Per check index: the last failure's signature and how many runs in a
+  // row returned it. Measured (k8z): one wrong assert was steered in 8
+  // times until the run timed out; the third identical failure now stops
+  // the steering for that check (the final run and the judge still see it).
+  const failureRepeats = new Map<number, { signature: string; repeats: number }>();
+  const repeatStatesFor = (
+    outcomes: readonly { ok: boolean; detail: string }[],
+  ): Map<number, CheckRepeatState> => {
+    const states = new Map<number, CheckRepeatState>();
+    outcomes.forEach((outcome, i) => {
+      if (outcome.ok) {
+        failureRepeats.delete(i);
+        return;
+      }
+      const signature = checkFailureSignature(outcome.detail);
+      const prior = failureRepeats.get(i);
+      const repeats = prior?.signature === signature ? prior.repeats + 1 : 1;
+      failureRepeats.set(i, { signature, repeats });
+      if (repeats >= 2) states.set(i, repeats === 2 ? "doubt" : repeats === 3 ? "stop" : "silent");
+    });
+    return states;
+  };
   const checkAfterChange = (signal: AbortSignal): void => {
     if (!checksAfterChange || !changedSinceCheck || pendingCheck !== undefined) return;
     if (!allFilesExist(task.files ?? [], workingDir)) return;
@@ -1439,7 +1463,20 @@ async function runOneTask(
           )
         : run.outcomes;
       const failed = outcomes.filter((outcome) => !outcome.ok).length;
-      const text = formatCheckResultSteer(ownChecks, outcomes);
+      const repeats = repeatStatesFor(outcomes);
+      const silent = [...repeats.values()].filter((state) => state === "silent").length;
+      const stopped = [...repeats.values()].filter((state) => state !== "doubt").length;
+      // Only failures the worker was told to stop on: nothing new to say.
+      if (failed > 0 && silent === failed) {
+        deps.logger?.info("fusion: worker's checks failed as before — not steered", {
+          taskId: task.id,
+          checks: outcomes.length,
+          failed,
+          ms: Date.now() - checkStarted,
+        });
+        return;
+      }
+      const text = formatCheckResultSteer(ownChecks, outcomes, repeats);
       // An unchanged all-green result says nothing new.
       if (failed === 0 && text === lastCheckSteer) return;
       lastCheckSteer = text;
@@ -1448,6 +1485,7 @@ async function runOneTask(
         taskId: task.id,
         checks: outcomes.length,
         failed,
+        ...(repeats.size > 0 ? { repeated: repeats.size, stopped } : {}),
         ms: Date.now() - checkStarted,
         steered,
       });
