@@ -84,6 +84,8 @@ import {
   renderRedItems,
   renderRetryFindings,
   scopeOnlyRed,
+  voidedCheckIndexes,
+  withoutVoidedChecks,
   type JudgeSession,
   type JudgeVerdict,
 } from "./judge.js";
@@ -1538,6 +1540,11 @@ export function buildFusionDelegateTool(
                 .map((v) => `${v.id} ${v.why}`.slice(0, 300)),
               // Red items that came with the judge's own edits (k8w on).
               fixes: redItems(verdict).filter((v) => (v.fix?.length ?? 0) > 0).length,
+              // Failed checks the judge ruled against the request (Fable 5.2).
+              void: verdict.items
+                .filter((v) => v.void === true)
+                .slice(0, 8)
+                .map((v) => `${v.id} ${v.why}`.slice(0, 300)),
             });
           }
         };
@@ -1578,11 +1585,18 @@ export function buildFusionDelegateTool(
           // The retry keeps the right to split: a task judged red for being
           // too big would only fail again in one piece.
           const retryTasks = parsed.tasks.filter((t) => retryIds.has(t.id));
+          // A check the judge voided is out of the retry's contract, so its
+          // worker is neither briefed nor steered by it (Fable 5.2, k8ac).
+          const voided = new Set(
+            red
+              .filter(([id]) => retryIds.has(id))
+              .flatMap(([id, verdict]) => voidedCheckIndexes(acceptance.get(id) ?? [], verdict)),
+          );
           const retried = await expandWave(
             retryTasks,
             await runTasks(
               retryTasks,
-              contractForWave(parsed.contract, [...waveWarnings]),
+              contractForWave(withoutVoidedChecks(parsed.contract, voided), [...waveWarnings]),
               (taskId) =>
                 [waveSuffix?.(taskId), findings.get(taskId)]
                   .filter((part): part is string => part !== undefined)

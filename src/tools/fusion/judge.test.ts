@@ -28,12 +28,15 @@ import {
   judgeTask,
   judgeTasks,
   parseJudgeAnswer,
+  parseJudgeVoids,
   renderJudgeCallPrompt,
   renderJudgePrompt,
   renderRetryFindings,
   renderRuntimeRecord,
   scopeOnlyRed,
   shareEvidenceBudget,
+  voidedCheckIndexes,
+  withoutVoidedChecks,
   type AcceptanceItem,
   type JudgeVerdict,
   type JudgeSession,
@@ -45,6 +48,8 @@ import {
 } from "./fusion-delegate.js";
 import type { EscalationComplete } from "./escalation.js";
 import type { DelegateTask } from "./delegate-args.js";
+import type { ContractCheckRunner } from "./contract-checks.js";
+import { describeChecks } from "./worker-result.js";
 
 const logger = new StructuredLogger({ level: "error", sinks: [] });
 const TARGET = { providerId: "cloud", model: "judge-model" };
@@ -1468,5 +1473,169 @@ describe("scopeOnlyRed (Fable 3)", () => {
     );
     expect(renderRuntimeRecord({ ...record, strays: [] }, w)).not.toContain("written outside");
     expect(renderRuntimeRecord(record, w)).not.toContain("written outside");
+  });
+});
+
+describe("the judge rules on a failed check (Fable 5.2, k8ac-k8ad)", () => {
+  // The orchestrator's assert that contradicts the request: a self-reference
+  // must give #CYKEL, the check expects a number.
+  const CHECK = { task: "t", kind: "command", cmd: "python", args: ["-c", "assert b1 == 5.0"] };
+  const FAILED = "AssertionError: B1 is #CYKEL, not 5.0";
+  const WHY = 'contradicts "a cell that refers to itself shows #CYKEL"';
+  const failing = (): ContractCheckRunner => async (specs) => ({
+    ok: false,
+    results: specs.map(() => ({ ok: false, error: FAILED })),
+  });
+  const run = async (d: FusionDelegateDeps, dir: string, tasks: DelegateTask[] = TASK) =>
+    buildFusionDelegateTool(d).run(
+      { tasks, contract: { checks: [CHECK] } },
+      { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+    );
+  type Row = { status: string; error?: string; notes?: string[]; checks?: object };
+
+  it("reads only the voids that name a check and say why", () => {
+    const content =
+      'ok {"red":[],"pass":["a2"],"void":[{"id":"a1","why":" krav 5 "},{"id":"a3"},{"id":7,"why":"x"},{"id":"a4","why":"  "}]} end';
+    expect(parseJudgeVoids(content)).toEqual(new Map([["a1", "krav 5"]]));
+    expect(parseJudgeVoids('{"red":[],"pass":["a1"]}').size).toBe(0);
+    expect(parseJudgeVoids("no json here").size).toBe(0);
+  });
+
+  it("drops a voided check from the retry's contract, and keeps the contract as it was when nothing is voided", () => {
+    const contract = { owners: { "a.txt": "t" }, checks: [CHECK, { ...CHECK, args: ["-c", "pass"] }] };
+    expect(withoutVoidedChecks(contract, new Set())).toBe(contract);
+    expect(withoutVoidedChecks(undefined, new Set([0]))).toBeUndefined();
+    expect(withoutVoidedChecks(contract, new Set([0]))).toEqual({
+      owners: { "a.txt": "t" },
+      checks: [{ ...CHECK, args: ["-c", "pass"] }],
+    });
+    expect(withoutVoidedChecks(contract, new Set([0, 1]))).toEqual({ owners: { "a.txt": "t" } });
+    const items = buildAcceptanceChecklist(TASK[0]!, contract);
+    const verdict: JudgeVerdict = {
+      green: true,
+      items: [
+        { id: "a1", pass: true, why: WHY, by: "judge", void: true },
+        { id: "a2", pass: true, why: "ok", by: "fact" },
+      ],
+      costUsd: null,
+    };
+    expect(voidedCheckIndexes(items, verdict)).toEqual([0]);
+  });
+
+  it("says how many checks the judge voided on the row", () => {
+    expect(describeChecks({ total: 2, passed: 1, failed: 0, voided: 1 } as never, 200)).toBe(
+      "checks: 1 of 2 passed, 1 voided by the judge",
+    );
+    expect(describeChecks({ total: 2, passed: 2, failed: 0 } as never, 200)).toBe("checks: 2 of 2 passed");
+  });
+
+  it("shows a failed check with its spec and failure to the judge, and a void closes the task without a retry", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-void-"));
+    const prompts: string[] = [];
+    const records: LogRecord[] = [];
+    const d = deps(
+      dir,
+      async (call) => {
+        prompts.push(call.prompt);
+        return { content: JSON.stringify({ red: [], pass: ["a3"], void: [{ id: "a1", why: WHY }] }) };
+      },
+      {
+        runChecks: failing(),
+        logger: new StructuredLogger({ level: "info", sinks: [(r) => records.push(r)] }),
+      },
+    );
+    const result = await run(d, dir);
+    expect(d.briefs).toHaveLength(1);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('## Failed checks (keep, or name in "void")');
+    expect(prompts[0]).toContain(`- a1: the check ${JSON.stringify({ kind: "command", cmd: "python", args: ["-c", "assert b1 == 5.0"] })}`);
+    expect(prompts[0]).toContain(`  failed: ${FAILED}`);
+    const toRule = prompts[0]!.split("## Items to rule on")[1]!.split("\n\n")[0]!;
+    expect(toRule).toContain("- a3:");
+    expect(toRule).not.toContain("- a1:");
+    const row = (result.details.tasks as Row[])[0]!;
+    expect(row.status).toBe("ok");
+    expect(row.error).toBeUndefined();
+    expect(row.notes).toContain(`check voided by judge: a1 ${WHY}`);
+    expect(row.checks).toEqual(expect.objectContaining({ failed: 0, voided: 1 }));
+    const verdicts = records.filter((r) => r.message === "fusion: judge verdict").map((r) => r.context);
+    expect(verdicts).toEqual([
+      expect.objectContaining({ round: "first", green: true, void: [`a1 ${WHY}`] }),
+    ]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("keeps a check the judge does not void red, and retries the task for it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-keep-"));
+    let judged = 0;
+    const d = deps(
+      dir,
+      async () => {
+        judged += 1;
+        return { content: JSON.stringify({ red: [], pass: ["a3"] }) };
+      },
+      { runChecks: failing() },
+    );
+    const result = await run(d, dir);
+    expect(judged).toBe(2);
+    expect(d.briefs).toHaveLength(2);
+    expect(d.briefs[1]).toContain(`[a1] the check passes: ${JSON.stringify({ kind: "command", cmd: "python", args: ["-c", "assert b1 == 5.0"] })}`);
+    expect(d.briefs[1]).toContain(FAILED);
+    expect(d.briefs[1]).not.toContain("voided by the judge");
+    const row = (result.details.tasks as Row[])[0]!;
+    expect(row.status).toBe("failed");
+    expect(row.error).toContain("a1");
+    expect(row.notes ?? []).not.toContainEqual(expect.stringContaining("check voided"));
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("tells the retry not to edit for a voided check and carries the ruling into the next round", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-carry-"));
+    const prompts: string[] = [];
+    const d = deps(
+      dir,
+      async (call) => {
+        prompts.push(call.prompt);
+        return {
+          content: JSON.stringify(
+            prompts.length === 1
+              ? { red: [{ id: "a3", why: "no score in a.txt" }], pass: [], void: [{ id: "a1", why: WHY }] }
+              : { red: [], pass: ["a3"] },
+          ),
+        };
+      },
+      { runChecks: failing() },
+    );
+    const result = await run(d, dir);
+    expect(d.briefs).toHaveLength(2);
+    expect(d.briefs[1]).toContain(`- [a1] check voided by the judge — do not edit for it: ${WHY}`);
+    expect(d.briefs[1]).toContain("[a3] the task is done as instructed: write a.txt with the score — no score in a.txt");
+    expect(prompts).toHaveLength(2);
+    const followUp = prompts[1]!.slice(prompts[0]!.length);
+    expect(followUp).not.toContain("failed after the retry");
+    expect(followUp).toContain(`a1: void (your ruling) — ${WHY}`);
+    const row = (result.details.tasks as Row[])[0]!;
+    expect(row.status).toBe("ok");
+    expect(row.notes).toContain(`check voided by judge: a1 ${WHY}`);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("does not pay the judge when a firm fact is already red, failed check or not", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-firm-"));
+    let judged = 0;
+    const d = deps(
+      dir,
+      async () => {
+        judged += 1;
+        return { content: JSON.stringify({ red: [], pass: ["a4"], void: [{ id: "a1", why: WHY }] }) };
+      },
+      { runChecks: failing() },
+    );
+    const result = await run(d, dir, [{ ...TASK[0]!, files: ["a.txt", "b.txt"] }]);
+    expect(judged).toBe(0);
+    const row = (result.details.tasks as Row[])[0]!;
+    expect(row.status).toBe("failed");
+    expect(row.notes ?? []).not.toContainEqual(expect.stringContaining("check voided"));
+    rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -300,6 +300,15 @@ export interface ItemVerdict {
    * (the list cannot be green either way; asking would only cost).
    */
   by: "fact" | "judge" | "skipped";
+  /**
+   * A failed contract check the judge ruled wrong — what it expects
+   * contradicts the user's request (Fable 5.2, k8ac-k8ad, 16-11-2026: an
+   * orchestrator assert `B1 =SUM(B3:A1)` == 5.0 where the request makes a
+   * self-reference a cycle cost 130-300 s of steering per run). Neither
+   * red nor a finding: `pass` is true, `why` quotes the requirement, and
+   * the retry is neither briefed nor steered by the check.
+   */
+  void?: true;
 }
 
 export interface JudgeVerdict {
@@ -613,9 +622,26 @@ export interface JudgePromptTask {
   task: DelegateTask;
   items: readonly AcceptanceItem[];
   facts: readonly ItemVerdict[];
+  /**
+   * The task's contract checks that ran and failed, for the judge to keep
+   * or void (`ItemVerdict.void`): the spec as the orchestrator wrote it
+   * and the failure the runtime saw.
+   */
+  disputed?: readonly DisputedCheck[];
   /** `renderRuntimeRecord`'s text, when the runtime recorded the workers. */
   record?: string;
 }
+
+/** A failed check as the judge reads it. */
+export interface DisputedCheck {
+  id: string;
+  spec: string;
+  detail: string;
+}
+
+/** The spec and failure of a disputed check, each cut to this. */
+const DISPUTED_SPEC_CHARS = 1_500;
+const DISPUTED_DETAIL_CHARS = 1_200;
 
 const RECORD_HEADING = "## Recorded by the runtime (";
 
@@ -668,13 +694,16 @@ export const JUDGE_RULES = [
   "An instruction to run a check (a self-test, a command) is a means, not a deliverable: when the runtime's verify passed, a check the worker did not run is not a defect by itself. Rule red only for a defect the evidence shows in what the check was for — say which line or behaviour.",
   "When the case shows the user's original request, the tasks were briefed from it. Where that request fixes an exact name, message, output line, format or value for what a task builds, the work must match it character for character; the task's own wording does not override it. Rule on each task only for its part of the request.",
   "How the evidence shows a file: a new file whole; a changed file whole when it is short, otherwise as a diff of what the work changed (`+` added, `-` removed, unmarked lines are context) — the parts of it the diff does not show are as they were before the work; an unchanged file whole when it is short, otherwise only by name. An item that needs a change the evidence does not show is not met.",
+  // k8ac-k8ad (16-11-2026): an orchestrator assert that contradicted the
+  // request steered the worker against the right code for 130-300 s.
+  `A failed check shown under a task was written by the orchestrator, not the user, and is usually right: then the code is what is wrong. Name the check in "void" only when the value or behaviour it expects contradicts the user's request or the task's instructions, and quote that requirement in "why"; a check you do not void stays failed. Rule on the task's other items as if a voided check were absent.`,
   // Every defect at once: k3b's first round named only "Tilføjet", the
   // retry fixed it, and the second round then failed the same item for
   // argparse's exit 2, which had been there all along — a second round,
   // a red task and a new delegation for one defect (16-11-2026). Each
   // defect once: k3c's answers repeated one defect under every item it
   // touched, and output is the dearest token there is.
-  `Answer with JSON only: {"red":[{"id":"<item id>","why":"one line: every defect in this item, joined by '; '","fix":[{"path":"<file>","old":"<exact lines>","new":"<their replacement>"}]}],"pass":["<item id>"]} — every item to rule on in exactly one of the two lists; a reason only for a red item. Name all of a red item's defects now: the worker gets one retry, and a defect left out is found only after it. Name each defect once, under the first item it fails, in at most about 20 words; another item that fails for the same defect says only "same as <id>".`,
+  `Answer with JSON only: {"red":[{"id":"<item id>","why":"one line: every defect in this item, joined by '; '","fix":[{"path":"<file>","old":"<exact lines>","new":"<their replacement>"}]}],"pass":["<item id>"],"void":[{"id":"<failed check id>","why":"the requirement it contradicts, quoted"}]} — every item to rule on in exactly one of the two lists; a reason only for a red item; "void" only for a failed check you rule wrong, otherwise leave it out. Name all of a red item's defects now: the worker gets one retry, and a defect left out is found only after it. Name each defect once, under the first item it fails, in at most about 20 words; another item that fails for the same defect says only "same as <id>".`,
   // k8s-k8u (16-11-2026): every retry was a cold worker session of 6-15
   // steps (95-165 s) for a 1-5 line repair the judge had already located.
   `"fix" is optional and goes only with a red item: when the repair is small and you can see it in a file shown whole, give it as at most ${JUDGE_MAX_FIXES_PER_ITEM} edits in that task's own files — "path" as the file's evidence heading names it, "old" copied character for character from the evidence (whole lines, unique in the file, at most 12 lines), "new" its replacement. The worker applies them as given. Leave "fix" out when the file is shown as a diff or clipped, when the repair is larger, or when you are not sure of it; never repeat an edit under a second item.`,
@@ -686,7 +715,11 @@ function itemKey(qualified: boolean): (taskId: string, itemId: string) => string
 
 /** The items a task's judge rules on: those no script settled. */
 function judgedItems(t: JudgePromptTask): AcceptanceItem[] {
-  return t.items.filter((item) => !t.facts.some((fact) => fact.id === item.id));
+  return t.items.filter(
+    (item) =>
+      !t.facts.some((fact) => fact.id === item.id) &&
+      !(t.disputed ?? []).some((check) => check.id === item.id),
+  );
 }
 
 function renderFacts(
@@ -695,7 +728,32 @@ function renderFacts(
 ): string[] {
   return t.facts.length === 0
     ? ["(none)"]
-    : t.facts.map((f) => `- ${key(t.task.id, f.id)}: ${f.pass ? "met" : "NOT met"} — ${f.why}`);
+    : t.facts.map(
+        (f) =>
+          `- ${key(t.task.id, f.id)}: ${f.void === true ? "void (your ruling)" : f.pass ? "met" : "NOT met"} — ${f.why}`,
+      );
+}
+
+/** The failed checks to keep or void, as one section; nothing when none. */
+function renderDisputed(
+  t: JudgePromptTask,
+  key: (taskId: string, itemId: string) => string,
+  heading: string,
+): string[] {
+  const disputed = t.disputed ?? [];
+  if (disputed.length === 0) return [];
+  return [
+    heading,
+    ...disputed.flatMap((check) => [
+      `- ${key(t.task.id, check.id)}: the check ${clip(check.spec, DISPUTED_SPEC_CHARS)}`,
+      `  failed: ${clip(check.detail.replace(/\s+/g, " ").trim(), DISPUTED_DETAIL_CHARS)}`,
+    ]),
+    "",
+  ];
+}
+
+function clip(text: string, chars: number): string {
+  return text.length > chars ? `${text.slice(0, chars)}[…]` : text;
 }
 
 /**
@@ -731,6 +789,7 @@ export function renderJudgeCallPrompt(input: {
       `${sub} Items to rule on`,
       ...judgedItems(t).map((item) => `- ${key(t.task.id, item.id)}: ${judgeItemText(item)}`),
       "",
+      ...renderDisputed(t, key, `${sub} Failed checks (keep, or name in "void")`),
       `${sub} Already established by scripts (for context; not yours to change)`,
       ...renderFacts(t, key),
       "",
@@ -812,6 +871,7 @@ export function renderJudgeFollowUp(input: {
         "Items to rule on:",
         ...items,
         "",
+        ...renderDisputed(t, key, 'Failed checks (keep, or name in "void"):'),
         "Established by scripts (not yours to change):",
         ...renderFacts(t, key),
         "",
@@ -828,6 +888,7 @@ export function renderJudgeFollowUp(input: {
       "Items to rule on again:",
       ...items,
       "",
+      ...renderDisputed(t, key, 'Checks that failed after the retry (keep, or name in "void"):'),
       "Established by scripts after the retry (not yours to change):",
       ...renderFacts(t, key),
       "",
@@ -947,6 +1008,59 @@ export function parseJudgeAnswer(
 }
 
 /**
+ * The failed checks the judge voided, id to its reason, from the same
+ * answer as `parseJudgeAnswer`. A void without a reason is not a ruling
+ * and is left out: the check stays failed.
+ */
+export function parseJudgeVoids(content: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const start = content.indexOf("{");
+  const end = content.lastIndexOf("}");
+  if (start === -1 || end <= start) return out;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content.slice(start, end + 1));
+  } catch {
+    return out;
+  }
+  if (parsed === null || typeof parsed !== "object") return out;
+  const voids = (parsed as Record<string, unknown>).void;
+  for (const entry of Array.isArray(voids) ? voids : []) {
+    if (entry === null || typeof entry !== "object") continue;
+    const { id, why } = entry as Record<string, unknown>;
+    if (typeof id !== "string" || typeof why !== "string" || why.trim().length === 0) continue;
+    out.set(id, why.trim());
+  }
+  return out;
+}
+
+/**
+ * The contract a retry runs under: without the checks the judge voided
+ * (indexes into `contract.checks`), so its worker is neither briefed nor
+ * steered by them. The same object when nothing was voided.
+ */
+export function withoutVoidedChecks(
+  contract: DelegateContract | undefined,
+  voided: ReadonlySet<number>,
+): DelegateContract | undefined {
+  if (contract?.checks === undefined || voided.size === 0) return contract;
+  const { checks, ...rest } = contract;
+  const kept = checks.filter((_, index) => !voided.has(index));
+  return kept.length === 0 ? rest : { ...rest, checks: kept };
+}
+
+/** The `contract.checks` indexes of a verdict's voided check items. */
+export function voidedCheckIndexes(
+  items: readonly AcceptanceItem[],
+  verdict: JudgeVerdict,
+): number[] {
+  return verdict.items
+    .filter((v) => v.void === true)
+    .map((v) => items.find((item) => item.id === v.id)?.checkIndex)
+    .filter((index): index is number => index !== undefined);
+}
+
+/**
  * A red item's edits as the judge gave them: each needs a non-empty
  * `path` and `old`, a string `new` that differs from `old`, and both
  * within `JUDGE_FIX_MAX_CHARS`; at most `JUDGE_MAX_FIXES_PER_ITEM` are
@@ -1034,6 +1148,12 @@ export interface JudgeRound {
 export interface JudgeSession {
   key?: string;
   last?: JudgeRound;
+  /**
+   * Failed checks the judge voided in an earlier round, keyed
+   * `<task>:<item>`, with its reason: a later round carries the ruling
+   * while the check still fails, rather than asking for it again.
+   */
+  voided?: Map<string, string>;
 }
 
 /**
@@ -1057,17 +1177,48 @@ export async function judgeTasks(
   },
 ): Promise<Map<string, JudgeVerdict>> {
   const settled = new Map<string, JudgeVerdict>();
-  const asked: Array<{ entry: JudgeEntry; facts: ItemVerdict[]; needs: AcceptanceItem[] }> = [];
+  const asked: Array<{
+    entry: JudgeEntry;
+    facts: ItemVerdict[];
+    disputed: Array<{ verdict: ItemVerdict; check: DisputedCheck }>;
+    needs: AcceptanceItem[];
+  }> = [];
   for (const entry of input.entries) {
     const facts: ItemVerdict[] = [];
+    const disputed: Array<{ verdict: ItemVerdict; check: DisputedCheck }> = [];
     for (const item of entry.items) {
       const verdict = await factVerdict(item, input.facts, input.workingDir);
-      if (verdict !== undefined) facts.push(verdict);
+      if (verdict === undefined) continue;
+      // A check that ran and failed is the orchestrator's assert, not a
+      // fact the judge must take (Fable 5.2, k8ac-k8ad): the judge keeps
+      // it or voids it, and a void stands while the check still fails.
+      const failedCheck =
+        item.kind === "check" &&
+        !verdict.pass &&
+        input.facts.checkOutcomes[item.checkIndex ?? -1] !== undefined;
+      if (!failedCheck) {
+        facts.push(verdict);
+        continue;
+      }
+      const voided = input.session?.voided?.get(`${entry.task.id}:${item.id}`);
+      if (voided !== undefined) {
+        facts.push({ id: item.id, pass: true, why: voided, by: "judge", void: true });
+        continue;
+      }
+      disputed.push({
+        verdict,
+        check: { id: item.id, spec: checkSpec(input.contract, item.checkIndex), detail: verdict.why },
+      });
     }
-    const needs = entry.items.filter((item) => !facts.some((fact) => fact.id === item.id));
+    const needs = entry.items.filter(
+      (item) =>
+        !facts.some((fact) => fact.id === item.id) &&
+        !disputed.some((d) => d.verdict.id === item.id),
+    );
     // A red fact makes the list red whatever the judge would say, so the
-    // judge is not paid to say it; its items are listed as not judged.
-    if (needs.length === 0 || facts.some((v) => !v.pass)) {
+    // judge is not paid to say it; its items are listed as not judged,
+    // and a failed check stays failed.
+    if ((needs.length === 0 && disputed.length === 0) || facts.some((v) => !v.pass)) {
       const skipped = needs.map(
         (item): ItemVerdict => ({
           id: item.id,
@@ -1077,13 +1228,15 @@ export async function judgeTasks(
         }),
       );
       settled.set(entry.task.id, {
-        green: facts.every((v) => v.pass) && skipped.length === 0,
-        items: [...facts, ...skipped].sort((a, b) => itemOrder(a.id) - itemOrder(b.id)),
+        green: facts.every((v) => v.pass) && skipped.length === 0 && disputed.length === 0,
+        items: [...facts, ...disputed.map((d) => d.verdict), ...skipped].sort(
+          (a, b) => itemOrder(a.id) - itemOrder(b.id),
+        ),
         costUsd: null,
       });
       continue;
     }
-    asked.push({ entry, facts, needs });
+    asked.push({ entry, facts, disputed, needs });
   }
   const inOrder = (): Map<string, JudgeVerdict> =>
     new Map(input.entries.map((e) => [e.task.id, settled.get(e.task.id)!]));
@@ -1103,10 +1256,11 @@ export async function judgeTasks(
   // A follow-up round reads the earlier rounds' evidence from the session,
   // clipped as it was then.
   const clipped = evidence.clipped || last?.clipped === true;
-  const tasks = asked.map(({ entry, facts }): JudgePromptTask => ({
+  const tasks = asked.map(({ entry, facts, disputed }): JudgePromptTask => ({
     task: entry.task,
     items: entry.items,
     facts,
+    ...(disputed.length === 0 ? {} : { disputed: disputed.map((d) => d.check) }),
     ...(entry.record === undefined
       ? {}
       : { record: renderRuntimeRecord(entry.record, input.workingDir) }),
@@ -1153,11 +1307,14 @@ export async function judgeTasks(
   const share = costUsd === null ? null : costUsd / asked.length;
   const ruled = content === undefined ? null : parseJudgeAnswer(content);
   if (ruled === null) failure ??= "the judge's answer could not be read";
-  for (const { entry, facts, needs } of asked) {
+  const voids = content === undefined ? new Map<string, string>() : parseJudgeVoids(content);
+  for (const { entry, facts, disputed, needs } of asked) {
     if (ruled === null) {
       settled.set(entry.task.id, {
         green: false,
-        items: facts,
+        items: [...facts, ...disputed.map((d) => d.verdict)].sort(
+          (a, b) => itemOrder(a.id) - itemOrder(b.id),
+        ),
         unverified: failure!,
         costUsd: share,
       });
@@ -1169,7 +1326,17 @@ export async function judgeTasks(
         ? { id: item.id, pass: false, why: "the judge gave no verdict", by: "judge" }
         : { id: item.id, ...verdict, by: "judge" };
     });
-    const all = [...facts, ...judged].sort((a, b) => itemOrder(a.id) - itemOrder(b.id));
+    // A failed check the judge did not void stays the red fact it was.
+    const checks = disputed.map(({ verdict }): ItemVerdict => {
+      const why = voids.get(qualified ? `${entry.task.id}:${verdict.id}` : verdict.id);
+      if (why === undefined) return verdict;
+      if (input.session !== undefined) {
+        input.session.voided ??= new Map();
+        input.session.voided.set(`${entry.task.id}:${verdict.id}`, why);
+      }
+      return { id: verdict.id, pass: true, why, by: "judge", void: true };
+    });
+    const all = [...facts, ...checks, ...judged].sort((a, b) => itemOrder(a.id) - itemOrder(b.id));
     settled.set(entry.task.id, {
       green: all.every((v) => v.pass),
       items: all,
@@ -1198,6 +1365,14 @@ function itemOrder(id: string): number {
   return Number.parseInt(id.slice(1), 10);
 }
 
+/** A contract check as the orchestrator wrote it, without its task. */
+function checkSpec(contract: DelegateContract | undefined, index: number | undefined): string {
+  const check = index === undefined ? undefined : contract?.checks?.[index];
+  if (check === undefined) return "(its spec is not available)";
+  const { task: _task, ...spec } = check;
+  return JSON.stringify(spec);
+}
+
 /** The items found not met; a skipped item is not a finding. */
 export function redItems(verdict: JudgeVerdict): ItemVerdict[] {
   return verdict.items.filter((v) => !v.pass && v.by !== "skipped");
@@ -1219,12 +1394,18 @@ export function renderRetryFindings(
   // k8s-k8u: each retry was a cold session of 6-15 steps (95-165 s) for a
   // repair the judge could already see; its edits go in as ready calls.
   const allFixed = red.length > 0 && red.every((v) => (v.fix?.length ?? 0) > 0);
+  const voided = verdict.items.filter((v) => v.void === true);
   return [
     "## A judge found these acceptance items NOT met in your previous attempt",
     ...red.flatMap((v) => {
       const item = items.find((i) => i.id === v.id);
       return [`- [${v.id}] ${item?.text ?? ""} — ${v.why}`, ...(v.fix ?? []).map(renderFixCall)];
     }),
+    // The check is out of the retry's contract; said once so the worker
+    // does not chase its old failure (Fable 5.2, k8ac-k8ad).
+    ...voided.map(
+      (v) => `- [${v.id}] check voided by the judge — do not edit for it: ${v.why}`,
+    ),
     ...(failed
       ? [
           `The runtime ran \`${(verify.command ?? "the fan-out's verify").slice(0, 200)}\` after every task finished; it failed (exit ${verify.exitCode ?? "none"}). Part of it may come from another task's files — fix what is in yours:`,
@@ -1307,12 +1488,13 @@ export function applyJudgeVerdict(
       ],
     };
   }
+  const lifted = liftVoidedChecks(result, verdict);
   if (verdict.green) {
     return {
-      ...result,
+      ...lifted,
       judge: summary,
       notes: [
-        ...(result.notes ?? []),
+        ...(lifted.notes ?? []),
         `judge: all ${verdict.items.length} acceptance items green${after}`,
       ],
     };
@@ -1321,11 +1503,49 @@ export function applyJudgeVerdict(
   const skipped = verdict.items.length - verdict.items.filter((v) => v.by !== "skipped").length;
   const error = `judge: ${red.length} of ${verdict.items.length} acceptance items not met${after} — ${detail}${skipped > 0 ? ` (${skipped} not judged)` : ""}`;
   return {
-    ...result,
+    ...lifted,
     status: "failed",
     judge: summary,
-    error: result.error === undefined ? error : `${error}; ${result.error}`,
+    error: lifted.error === undefined ? error : `${error}; ${lifted.error}`,
   };
+}
+
+/**
+ * The row once the judge voided failed checks: a note per check says
+ * which and why. When every failing check was voided, the checks no
+ * longer fail the task: their `checks: …` leaves the error, and with
+ * nothing else wrong the row is ok again (`applyCheckOutcomes` made it
+ * failed for them alone).
+ */
+function liftVoidedChecks(result: WorkerTaskResult, verdict: JudgeVerdict): WorkerTaskResult {
+  const voided = verdict.items.filter((v) => v.void === true);
+  if (voided.length === 0) return result;
+  const notes = [
+    ...(result.notes ?? []),
+    ...voided.map((v) => `check voided by judge: ${v.id} ${v.why}`),
+  ];
+  const checks = result.checks;
+  if (checks === undefined || checks.failed === 0 || checks.failed > voided.length) {
+    return { ...result, notes };
+  }
+  const own = checks.detail === undefined ? undefined : `checks: ${checks.detail}`;
+  let error = result.error;
+  if (own !== undefined && error?.startsWith(own) === true) {
+    error = error.slice(own.length).replace(/^; /, "");
+  }
+  const { detail: _detail, ...counts } = checks;
+  const out: WorkerTaskResult = {
+    ...result,
+    notes,
+    checks: { ...counts, failed: 0, voided: voided.length },
+  };
+  if (error === undefined || error.length === 0) {
+    delete out.error;
+    if (out.status === "failed") out.status = "ok";
+  } else {
+    out.error = error;
+  }
+  return out;
 }
 
 /**

@@ -372,6 +372,11 @@ export interface TaskCheckSummary {
   failed: number;
   /** The failing checks' verdicts, joined; absent when all passed. */
   detail?: string;
+  /**
+   * Failed checks the judge voided as contradicting the request
+   * (`applyJudgeVerdict`); they no longer count as failed.
+   */
+  voided?: number;
 }
 
 /**
@@ -385,7 +390,10 @@ export function describeChecks(
   error?: string,
 ): string {
   if (checks.failed === 0) {
-    return `checks: ${checks.total} of ${checks.total} passed`;
+    const voided = checks.voided ?? 0;
+    return voided === 0
+      ? `checks: ${checks.total} of ${checks.total} passed`
+      : `checks: ${checks.total - voided} of ${checks.total} passed, ${voided} voided by the judge`;
   }
   const detail =
     checks.detail === undefined || error?.startsWith("checks: ")
