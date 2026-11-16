@@ -1582,6 +1582,17 @@ async function runOneTask(
           }
           maybeHandBack();
         }
+        // The agent loop's own detector sees a loop `detectStall` cannot:
+        // a worker alternating re-reads with successful diagnostic runs is
+        // busy and distinct every step (k8n: 28 steps on one failing
+        // assertion, the fan-out out of time, no advisor asked). A lone
+        // re-read of an unchanged file (`read_repeat`) is not a stall.
+        if (event.type === "loop_detected" && event.detector !== "read_repeat") {
+          autoEscalate({
+            kind: "stall",
+            detail: `${event.detector ?? "loop"} ${event.tool} ${event.count}×`,
+          });
+        }
         if (
           event.type === "llm_event" &&
           event.event.type === "tool_call_parsed"

@@ -119,6 +119,61 @@ describe("advisor escalation of a stuck worker (ATO-942)", () => {
     expect(escalated.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("asks the advisor on the agent loop's loop the step check misses (k8n)", async () => {
+    // k8n: the core worker alternated re-reads with successful diagnostic
+    // runs; every step was busy and distinct, so `detectStall` never fired.
+    const busyStep = (hook: TurnOptions["eventHook"], i: number): void => {
+      hook?.({
+        type: "llm_event",
+        event: {
+          type: "tool_call_executed",
+          result: { tool: "os.shell.run", status: "ok", summary: `run ${i}`, details: {} },
+        },
+      } as never);
+      hook?.({ type: "step_finished", stepIndex: i, summary: "", durationMs: 1 } as AgentLoopEvent);
+    };
+    const loop = (detector: "read_repeat" | "outcome_repeat"): AgentLoopEvent => ({
+      type: "loop_detected",
+      tool: "os.fs.read",
+      count: detector === "read_repeat" ? 2 : 3,
+      stepIndex: 4,
+      level: "warn",
+      detector,
+    });
+    const reread = harness(async (_s, options) => {
+      for (let i = 0; i < 8; i += 1) busyStep(options.eventHook, i);
+      options.eventHook?.(loop("read_repeat"));
+      await flush();
+      return done();
+    });
+    await runWorkerTasks(reread.deps, {
+      ...BASE,
+      tasks: TASK,
+      signal: new AbortController().signal,
+      escalation: { target: TARGET, pricing: PRICING },
+    });
+    expect(reread.calls).toEqual([]);
+
+    const h = harness(async (_s, options) => {
+      for (let i = 0; i < 4; i += 1) busyStep(options.eventHook, i);
+      options.eventHook?.(loop("outcome_repeat"));
+      options.eventHook?.(loop("outcome_repeat"));
+      await flush();
+      for (let i = 4; i < 8; i += 1) busyStep(options.eventHook, i);
+      return done();
+    });
+    const [row] = await runWorkerTasks(h.deps, {
+      ...BASE,
+      tasks: TASK,
+      signal: new AbortController().signal,
+      escalation: { target: TARGET, pricing: PRICING },
+    });
+    expect(h.calls).toEqual(["cloud"]);
+    expect(row!.notes?.join("\n")).toMatch(
+      /escalated to big as advisor \(stalled: outcome_repeat os\.fs\.read 3×\)/,
+    );
+  });
+
   it("does nothing automatically when escalation is not turned on", async () => {
     const h = harness(async (_s, options) => {
       for (let i = 0; i < 6; i += 1) sameStep(options.eventHook, i);
