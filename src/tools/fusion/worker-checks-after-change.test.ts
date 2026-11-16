@@ -436,7 +436,7 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     );
     await run(h.deps);
     expect(idleSteers(h.readAt)).toHaveLength(1);
-    expect(idleSteers(h.readAt[3 + CHECK_IDLE_STEER_STEPS + 1]!)).toHaveLength(1);
+    expect(idleSteers([h.readAt[3 + CHECK_IDLE_STEER_STEPS + 1]!])).toHaveLength(1);
     expect(h.holds.every((hold) => hold === undefined)).toBe(true);
   });
 
