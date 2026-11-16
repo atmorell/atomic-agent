@@ -22,6 +22,8 @@ import type { WorkerPricing } from "./worker-result.js";
 export const ADVISOR_MAX_OUTPUT_TOKENS = 700;
 /** How much of the brief the advisor reads; the rest is the trace. */
 export const ADVISOR_BRIEF_CHARS = 3_000;
+/** How much of a hint the log keeps: a 700-token hint fits. */
+export const ADVISOR_HINT_LOG_CHARS = 4_000;
 
 export type EscalationTrigger =
   | { kind: "stall"; detail: string }
@@ -54,18 +56,28 @@ export type EscalationComplete = (input: {
   cliSessionKey?: string;
 }) => Promise<{ content: string; usage?: CompletionUsage }>;
 
+/**
+ * The advisor names the defect and the one edit that fixes it (k8h,
+ * 16-11-2026): asked for "which file to write", it sent a worker that
+ * had one wrong character in a regex into a 94-second rewrite of two
+ * files, and the rewrite brought a new bug. `evidence` is the worker's
+ * own failing run and reads (`WorkerRunCollector.evidence()` in
+ * worker-result.ts).
+ */
 export function renderAdvisorPrompt(input: {
   brief: string;
   trigger: EscalationTrigger;
   findings: string;
+  evidence?: string;
 }): string {
   const brief =
     input.brief.length > ADVISOR_BRIEF_CHARS
       ? `${input.brief.slice(0, ADVISOR_BRIEF_CHARS)}\n[… brief truncated]`
       : input.brief;
+  const evidence = input.evidence?.trim() ?? "";
   return [
     "You are advising a smaller model that is working on one task and appears to be stuck.",
-    "Read its brief and what it has done so far, then reply with concrete next steps it can follow: what to do next, which file to write or command to run, and what to stop doing. Under 500 words. No preamble, no code longer than a few lines.",
+    "Read its brief, what it has done and the evidence below. If the evidence shows the defect, name it as file:line and give the exact old and new lines for one os.fs.edit. Never tell it to rewrite or re-create a file. If you cannot see the defect, name the one command that would show it, such as a short script on stdin that imports the module and calls it. Then say what to stop doing. Under 300 words, no preamble.",
     "",
     "## Brief",
     brief,
@@ -75,6 +87,9 @@ export function renderAdvisorPrompt(input: {
     "",
     "## What it has done so far",
     input.findings,
+    "",
+    "## Evidence: its own runs and reads",
+    evidence.length > 0 ? evidence : "(none recorded: it has not run anything or re-read a file it wrote)",
   ].join("\n");
 }
 

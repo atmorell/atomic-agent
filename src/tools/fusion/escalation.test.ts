@@ -7,7 +7,11 @@ import { createEmptySessionState } from "../../session/session-state.js";
 import { FUSION_WORKER_ID_PREFIX } from "../../session/fusion-worker-session.js";
 import type { FusionEscalationTarget } from "../../llm/run-mode/index.js";
 import { runWorkerTasks, type WorkerRunnerDeps } from "./worker-runner.js";
-import { FusionLiveWorkers, type EscalationComplete } from "./escalation.js";
+import {
+  FusionLiveWorkers,
+  renderAdvisorPrompt,
+  type EscalationComplete,
+} from "./escalation.js";
 import type { DelegateTask } from "./delegate-args.js";
 
 type TurnOptions = Parameters<WorkerRunnerDeps["runTurn"]>[2];
@@ -346,5 +350,71 @@ describe("the person's stop and escalate on one worker (ATO-66)", () => {
     live.stop("s-parent", "t0");
     await run;
     expect(h.calls).toEqual([]);
+  });
+});
+
+describe("the advisor sees the worker's evidence and is asked for one edit (k8h)", () => {
+  function executed(tool: string, status: "ok" | "error", summary: string, details: Record<string, unknown>) {
+    return {
+      type: "llm_event",
+      event: { type: "tool_call_executed", result: { tool, status, summary, details } },
+    } as never;
+  }
+
+  it("the advisor prompt carries the failing run's output and the file lines the worker kept re-reading", async () => {
+    const prompts: string[] = [];
+    const logs: Array<[string, unknown]> = [];
+    const h = harness(
+      async (_s, options) => {
+        const hook = options.eventHook;
+        hook?.(executed("os.fs.write", "ok", "wrote ark/formel.py", { path: "/repo/ark/formel.py" }));
+        hook?.(executed("os.fs.read", "ok", "35| _TOKEN = re.compile(r'|(',')')", { path: "/repo/ark/formel.py" }));
+        hook?.(
+          executed("os.shell.run", "error", "key: TypeError: unsupported operand type(s) for &: 'str' and 'int'", {
+            exitCode: 1,
+          }),
+        );
+        for (let i = 0; i < 6; i += 1) sameStep(hook, i);
+        await flush();
+        return done();
+      },
+      {
+        escalationComplete: async ({ prompt }) => {
+          prompts.push(prompt);
+          return {
+            content: "ark/formel.py:35: replace r'|(',')' with r'|(,)' in one os.fs.edit.",
+            usage: { promptTokens: 1_000, completionTokens: 200, totalTokens: 1_200 },
+          };
+        },
+        logger: { info: (message: string, context?: unknown) => logs.push([message, context]) },
+      },
+    );
+    await runWorkerTasks(h.deps, {
+      ...BASE,
+      tasks: TASK,
+      signal: new AbortController().signal,
+      escalation: { target: TARGET, pricing: PRICING },
+    });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("## Evidence: its own runs and reads");
+    expect(prompts[0]).toContain("TypeError: unsupported operand type(s) for &");
+    expect(prompts[0]).toContain("r'|(',')'");
+    expect(logs).toContainEqual([
+      "fusion: advisor hint",
+      expect.objectContaining({ taskId: "t0", hint: expect.stringContaining("formel.py:35") }),
+    ]);
+  });
+
+  it("the advisor prompt asks for one targeted edit and forbids a whole-file rewrite", () => {
+    const prompt = renderAdvisorPrompt({
+      brief: "write ark/formel.py",
+      trigger: { kind: "stall", detail: "same result 3×" },
+      findings: "4 tool calls",
+    });
+    expect(prompt).toMatch(/file:line/);
+    expect(prompt).toMatch(/one os\.fs\.edit/);
+    expect(prompt).toMatch(/Never tell it to rewrite or re-create a file/);
+    expect(prompt).not.toMatch(/which file to write/);
+    expect(prompt).toContain("(none recorded");
   });
 });

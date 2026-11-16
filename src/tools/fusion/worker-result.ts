@@ -422,6 +422,10 @@ export class WorkerRunCollector {
   private runs: WorkerCommandRun[] = [];
   private startedJob = false;
   private readonly written = new Set<string>();
+  /** The advisor's evidence (k8h): see {@link WorkerRunCollector.evidence}. */
+  private failedRun: string | undefined;
+  private failedEdit: string | undefined;
+  private readonly ownReads: string[] = [];
 
   /**
    * The paths this worker's successful write, edit, patch and restore
@@ -533,6 +537,7 @@ export class WorkerRunCollector {
       // the write landed before the guard spoke.
       this.replaced.push(...replacedInputsOf(result.tool, result.details));
       this.trackCommand(result);
+      this.trackEvidence(result);
       this.recent.push(
         `${result.tool} ${result.status}: ${oneLine(result.summary, FINDING_CHARS)}`,
       );
@@ -584,6 +589,54 @@ export class WorkerRunCollector {
         : []),
     ];
     return parts.join("; ");
+  }
+
+  /**
+   * What an advisor needs to name the defect (k8h, 16-11-2026): the tail
+   * of the last failing shell run, the worker's last reads of files it
+   * wrote itself, and its last failed edit. With only `findings()` the
+   * advisor saw 160 characters per result, no file line and no
+   * traceback, and its hint led to a 94-second rewrite of two files that
+   * one edit (`r'|(',')'`) would have fixed. Only what the worker's own
+   * tools already returned: nothing is read again.
+   */
+  evidence(): string {
+    const parts = [
+      ...(this.failedRun === undefined ? [] : [`### Last failing run\n${this.failedRun}`]),
+      ...(this.failedEdit === undefined ? [] : [`### Last failed edit\n${this.failedEdit}`]),
+      ...this.ownReads.map((read) => `### Read of a file it wrote\n${read}`),
+    ];
+    const text = parts.join("\n\n");
+    return text.length > EVIDENCE_CHARS
+      ? `${text.slice(0, EVIDENCE_CHARS)}\n[… evidence cut]`
+      : text;
+  }
+
+  private trackEvidence(result: CompressedToolResult): void {
+    const details = (result.details ?? {}) as Record<string, unknown>;
+    if (result.tool === "os.shell.run") {
+      const exit = details.exitCode;
+      const failed = result.status === "error" || (typeof exit === "number" && exit !== 0);
+      // A run that passed after it makes the old failure stale.
+      this.failedRun = failed ? evidenceTail(result.summary) : undefined;
+      return;
+    }
+    if (FILE_WRITING_TOOLS.has(result.tool) && result.status === "error") {
+      this.failedEdit = oneLine(result.summary, EVIDENCE_EDIT_CHARS);
+      return;
+    }
+    if (result.tool !== "os.fs.read" || result.status !== "ok") return;
+    const path = typeof details.path === "string" ? details.path : undefined;
+    if (path === undefined || !this.wrote(path)) return;
+    this.ownReads.push(cut(result.summary, EVIDENCE_READ_CHARS));
+    if (this.ownReads.length > EVIDENCE_READS_KEPT) this.ownReads.shift();
+  }
+
+  /** Path spellings differ between tools on Windows (case, separators). */
+  private wrote(path: string): boolean {
+    const key = samePath(path);
+    for (const written of this.written) if (samePath(written) === key) return true;
+    return false;
   }
 
   /** The worker loop's own account of why it stopped working, if any. */
@@ -968,6 +1021,33 @@ const NO_REPLY = "(the worker produced no reply)";
 /** How many tool results a hand-back's findings keep, and how much of each. */
 const FINDINGS_KEPT = 6;
 const FINDING_CHARS = 160;
+
+/** The advisor's evidence: about 2K tokens at most, read once per stall. */
+export const EVIDENCE_CHARS = 8_000;
+const EVIDENCE_RUN_LINES = 40;
+const EVIDENCE_RUN_CHARS = 3_000;
+const EVIDENCE_READ_CHARS = 3_000;
+const EVIDENCE_READS_KEPT = 2;
+const EVIDENCE_EDIT_CHARS = 400;
+
+/** A failing run's `key:` line, if the compressor led with one, and its last lines. */
+function evidenceTail(summary: string): string {
+  const lines = summary.split("\n");
+  const key = lines[0]?.startsWith("key: ") ? lines[0] : undefined;
+  const rest = key === undefined ? lines : lines.slice(1);
+  const tail = rest.slice(-EVIDENCE_RUN_LINES).join("\n");
+  const body =
+    tail.length > EVIDENCE_RUN_CHARS ? `[…]${tail.slice(-EVIDENCE_RUN_CHARS)}` : tail;
+  return key === undefined ? body : `${key}\n${body}`;
+}
+
+function cut(text: string, cap: number): string {
+  return text.length > cap ? `${text.slice(0, cap)}\n[…]` : text;
+}
+
+function samePath(path: string): string {
+  return path.replace(/\\/g, "/").toLowerCase();
+}
 
 /** How much of an error the head line carries; the rest is noise. */
 const ERROR_HEAD_CHARS = 400;

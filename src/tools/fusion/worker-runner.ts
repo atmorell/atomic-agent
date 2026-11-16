@@ -11,6 +11,7 @@ import type { CompletionUsage } from "../../llm/provider/completion-types.js";
 import type { FusionEscalationTarget } from "../../llm/run-mode/index.js";
 import { estimateUsageCostUsd } from "../../llm/provider/usage-cost.js";
 import {
+  ADVISOR_HINT_LOG_CHARS,
   describeTrigger,
   formatAdvisorSteer,
   formatCost,
@@ -1369,6 +1370,7 @@ async function runOneTask(
         brief,
         trigger,
         findings: collector.findings(),
+        evidence: collector.evidence(),
       }),
       complete: deps.escalationComplete,
       signal: AbortSignal.any([options.signal, stopByPerson.signal]),
@@ -1392,6 +1394,13 @@ async function runOneTask(
       announceEscalation(line, outcome.costUsd ?? undefined);
       return line;
     }
+    // The hint is what the worker acts on next; without it in the log a
+    // rewrite after advice could not be traced to the advice (k8h).
+    deps.logger?.info("fusion: advisor hint", {
+      taskId: task.id,
+      model: targetLabel,
+      hint: outcome.hint.slice(0, ADVISOR_HINT_LOG_CHARS),
+    });
     const steered =
       deps.steerWorker?.(session.id, formatAdvisorSteer(targetLabel, outcome.hint)) ??
       false;

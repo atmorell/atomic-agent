@@ -10,6 +10,7 @@ import {
   WORKER_HINT_UNREACHABLE,
   WORKER_HINT_UNSERVED,
   WORKER_COMMAND_OUTPUT_CHARS,
+  EVIDENCE_CHARS,
   WORKER_RECORDED_RUNS,
   WORKER_OPERATOR_ONLY_NOTE,
   WorkerRunCollector,
@@ -1262,5 +1263,43 @@ describe("unservedWorkerHint", () => {
     expect(
       unservedWorkerHint(unserved({ status: "queued" }), true),
     ).toBeUndefined();
+  });
+});
+
+describe("the advisor's evidence (k8h)", () => {
+  it("keeps the last failing run's tail and the worker's reads of files it wrote", () => {
+    const c = new WorkerRunCollector();
+    c.observe(toolExecuted("os.fs.write", "ok", "wrote", { path: "C:\\w\\ark\\formel.py" }));
+    c.observe(toolExecuted("os.fs.read", "ok", "35| _TOKEN = re.compile(r'|(',')')", { path: "c:/w/ark/formel.py" }));
+    c.observe(toolExecuted("os.fs.read", "ok", "README text", { path: "C:\\w\\README.md" }));
+    const run = [
+      "key: TypeError: unsupported operand type(s) for &: 'str' and 'int'",
+      ...Array.from({ length: 60 }, (_, i) => `frame ${i}`),
+    ].join("\n");
+    c.observe(toolExecuted("os.shell.run", "error", run, { cmd: "python", cwd: "C:\\w", exitCode: 1 }));
+    const evidence = c.evidence();
+    expect(evidence).toContain("### Last failing run\nkey: TypeError: unsupported operand");
+    expect(evidence).toContain("frame 59");
+    expect(evidence).not.toContain("frame 19");
+    expect(evidence).toContain("r'|(',')'");
+    expect(evidence).not.toContain("README text");
+  });
+
+  it("drops a failure once a later run passes, and stays under its cap", () => {
+    const c = new WorkerRunCollector();
+    c.observe(toolExecuted("os.shell.run", "error", "key: boom", { exitCode: 1 }));
+    c.observe(toolExecuted("os.shell.run", "ok", "3 passed", { exitCode: 0 }));
+    expect(c.evidence()).toBe("");
+    c.observe(toolExecuted("os.fs.write", "ok", "w", { path: "/r/a.py" }));
+    for (let i = 0; i < 5; i += 1) {
+      c.observe(toolExecuted("os.fs.read", "ok", String(i).repeat(5_000), { path: "/r/a.py" }));
+    }
+    c.observe(toolExecuted("os.fs.edit", "error", "old text not found in a.py", { path: "/r/a.py" }));
+    c.observe(toolExecuted("os.shell.run", "error", "x".repeat(9_000), { exitCode: 1 }));
+    const evidence = c.evidence();
+    expect(evidence.length).toBeLessThanOrEqual(EVIDENCE_CHARS + 20);
+    expect(evidence).toContain("### Last failed edit\nold text not found in a.py");
+    expect(evidence).not.toContain("00000");
+    expect(evidence).toContain("33333");
   });
 });
