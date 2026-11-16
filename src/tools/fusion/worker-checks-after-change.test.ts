@@ -17,7 +17,9 @@ import {
   CHECK_STOP_NOTE,
   CHECKS_GREEN_HOLD_NOTICE,
   CHECKS_RUN_BY_RUNTIME_RULE,
+  CHECKS_STOPPED_HOLD_NOTICE,
   checkFailureSignature,
+  failingCheckLine,
   formatCheckResultSteer,
 } from "./worker-prompt.js";
 
@@ -304,6 +306,80 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     expect(h.holds[3]).toMatchObject({ terminalOnly: true });
   });
 
+  // k8ad: stopped at 282 s, the worker edited against a wrong assert to 600 s.
+  const stoppedHold = { terminalOnly: true, notice: CHECKS_STOPPED_HOLD_NOTICE };
+
+  it("holds the step after the third identical failure to reply only, not at the doubt", async () => {
+    const { runner } = fakeRunner([1, 2, 3].map((n) => [same(n), { ok: true }]));
+    const h = harness(dir, writeCore(3), runner);
+    await run(h.deps);
+    expect(h.holds.slice(0, 3)).toEqual([undefined, undefined, undefined]);
+    expect(h.holds[3]).toEqual(stoppedHold);
+    expect(h.readAt[3]![0]).toContain(CHECK_STOP_NOTE);
+  });
+
+  it("keeps the hold through a silent fourth run", async () => {
+    const { runner, calls } = fakeRunner([1, 2, 3, 4].map((n) => [same(n), { ok: true }]));
+    const h = harness(dir, writeCore(4), runner);
+    await run(h.deps);
+    expect(calls).toHaveLength(4);
+    expect(h.readAt[4]).toEqual([]);
+    expect(h.holds[4]).toEqual(stoppedHold);
+  });
+
+  it("holds nothing while another check fails openly next to a stopped one", async () => {
+    const { runner } = fakeRunner([
+      ...[1, 2, 3].map((n) => [same(n), { ok: true }]),
+      [same(4), { ok: false, error: "exit 2: usage" }],
+    ]);
+    const h = harness(dir, writeCore(4), runner);
+    await run(h.deps);
+    expect(h.holds[3]).toEqual(stoppedHold);
+    expect(h.holds[4]).toBeUndefined();
+  });
+
+  it("drops the hold when the stopped failure changes", async () => {
+    const { runner } = fakeRunner([
+      ...[1, 2, 3].map((n) => [same(n), { ok: true }]),
+      [{ ok: false, error: "AssertionError on line 9" }, { ok: true }],
+    ]);
+    const h = harness(dir, writeCore(4), runner);
+    await run(h.deps);
+    expect(h.holds[3]).toEqual(stoppedHold);
+    expect(h.holds[4]).toBeUndefined();
+    expect(h.readAt[4]![0]).toContain("1 of 2 failed");
+  });
+
+  // k8ak: one wrong assert failed 5 runs with a new message each time and
+  // never reached doubt; the check's own line is what stays the same.
+  const atCheckLine = (n: number, line = 4) => ({
+    ok: false,
+    error: `verify.run command: FAILED exit 1 after ${90 + n} ms stderr (tail): Traceback (most recent call last): File "<string>", line ${line}, in <module> File "C:\\Temp\\k8ak\\ark\\formel.py", line ${70 + n * 3}, in parse AssertionError: got ${n}`,
+  });
+
+  it("stops and holds a failure at the same check line whose message changes every run", async () => {
+    const { runner } = fakeRunner([1, 2, 3].map((n) => [atCheckLine(n), { ok: true }]));
+    const h = harness(dir, writeCore(3), runner);
+    await run(h.deps);
+    expect(h.readAt[2]![0]).toContain(CHECK_DOUBT_NOTE);
+    expect(h.readAt[3]![0]).toContain(CHECK_STOP_NOTE);
+    expect(h.holds[3]).toEqual(stoppedHold);
+  });
+
+  it("starts over when the failure moves to another check line", async () => {
+    const { runner } = fakeRunner([
+      [atCheckLine(1), { ok: true }],
+      [atCheckLine(2), { ok: true }],
+      [atCheckLine(3, 5), { ok: true }],
+    ]);
+    const h = harness(dir, writeCore(3), runner);
+    await run(h.deps);
+    expect(h.readAt[2]![0]).toContain(CHECK_DOUBT_NOTE);
+    expect(h.readAt[3]![0]).not.toContain(CHECK_DOUBT_NOTE);
+    expect(h.readAt[3]![0]).not.toContain(CHECK_STOP_NOTE);
+    expect(h.holds[3]).toBeUndefined();
+  });
+
   it("tells the worker in its brief only when the runtime will run them", async () => {
     const { runner } = fakeRunner([[{ ok: true }, { ok: true }]]);
     const wired = harness(dir, [{}], runner);
@@ -379,5 +455,56 @@ describe("checkFailureSignature", () => {
   it("keeps what tells two failures apart", () => {
     expect(checkFailureSignature("core.py, line 3")).not.toBe(checkFailureSignature("core.py, line 4"));
     expect(checkFailureSignature("assert 0.0 == '#CYKEL'")).not.toBe(checkFailureSignature("assert 0.0 == 1.0"));
+  });
+
+  it("is the inline script's own line and the raised class when the check raised", () => {
+    const at = (message: string, codeLine: number) =>
+      checkFailureSignature(
+        `Traceback (most recent call last): File "<string>", line 7, in <module> File "C:\\T\\fv-1\\ark\\formel.py", line ${codeLine}, in parse raise ValueError('syntaksfejl: celle %r' % name) ValueError: ${message}`,
+      );
+    expect(at("syntaksfejl: celle 'S'", 72)).toBe("check-line:7 ValueError");
+    expect(at("syntaksfejl: celle 'X'", 81)).toBe(at("syntaksfejl: celle 'S'", 72));
+    expect(checkFailureSignature('File "<string>", line 7, in <module> AssertionError')).toBe(
+      "check-line:7 AssertionError",
+    );
+    expect(checkFailureSignature('File "<string>", line 7, in <module> KeyError: 3')).not.toBe(
+      checkFailureSignature('File "<string>", line 7, in <module> AssertionError'),
+    );
+  });
+
+  it("names every frame of the script, so a shared helper's assert is told apart by its caller", () => {
+    const a = checkFailureSignature('File "<string>", line 9, in <module> File "<string>", line 2, in eq AssertionError');
+    const b = checkFailureSignature('File "<stdin>", line 11, in <module> File "<stdin>", line 2, in eq AssertionError');
+    expect(a).toBe("check-line:9>2 AssertionError");
+    expect(b).toBe("check-line:11>2 AssertionError");
+  });
+});
+
+describe("failingCheckLine", () => {
+  const script = "from ark import Ark\nb = Ark()\nb.saet('A1', '=SUM(2,3)')\nassert b.vaerdi('A1') == 5, b.vaerdi('A1')";
+  const detail = 'Traceback (most recent call last): File "<string>", line 4, in <module> AssertionError: 4';
+
+  it("quotes the script's line that raised, from `python -c` or from stdin", () => {
+    expect(failingCheckLine({ cmd: "python", args: ["-c", script] }, detail)).toEqual({
+      line: 4,
+      source: "assert b.vaerdi('A1') == 5, b.vaerdi('A1')",
+    });
+    expect(
+      failingCheckLine({ cmd: "python", args: ["-"], stdin: script }, detail.replace("<string>", "<stdin>")),
+    ).toEqual({ line: 4, source: "assert b.vaerdi('A1') == 5, b.vaerdi('A1')" });
+  });
+
+  it("quotes nothing without a script frame or a script to read it from", () => {
+    expect(failingCheckLine({ cmd: "python", args: ["-c", script] }, "exit 1 after 3 ms")).toBeUndefined();
+    expect(failingCheckLine({ cmd: "python", args: ["t.py"] }, detail)).toBeUndefined();
+    expect(failingCheckLine({ cmd: "python", args: ["-c", "x = 1"] }, detail)).toBeUndefined();
+  });
+
+  it("is carried under the failure in the steer", () => {
+    const text = formatCheckResultSteer(
+      [{ task: "core", kind: "command", cmd: "python", args: ["-c", script] }],
+      [{ ok: false, detail }],
+    );
+    expect(text).toContain("\n  failing check line 4: `assert b.vaerdi('A1') == 5, b.vaerdi('A1')`");
   });
 });

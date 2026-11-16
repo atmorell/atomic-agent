@@ -277,6 +277,29 @@ describe("runContractChecks", () => {
     );
   });
 
+  it("keeps a long verdict's start and end: the check's own frame and the raised error", async () => {
+    const frames = Array.from({ length: 8 }, (_, i) => `  File "C:\\T\\fv-1\\ark\\m${i}.py", line ${10 + i}, in f${i}\n    g${i}()`);
+    const error = [
+      "verify.run command: FAILED",
+      "exit 1 after 140 ms",
+      "stderr (tail):",
+      "Traceback (most recent call last):",
+      '  File "<string>", line 7, in <module>',
+      ...frames,
+      "AssertionError: SUM(2,3) gave 4",
+    ].join("\n");
+    const out = await runContractChecks(
+      [{ cmd: "python" }],
+      async () => ({ ok: false, results: [{ ok: false, error }] }),
+      ctx,
+    );
+    const detail = out.outcomes[0]!.detail;
+    expect(detail).toHaveLength(400);
+    expect(detail).toContain('File "<string>", line 7, in <module>');
+    expect(detail.endsWith("AssertionError: SUM(2,3) gave 4")).toBe(true);
+    expect(detail).toContain(" …");
+  });
+
   it("skips the checks when the turn is already cancelled", async () => {
     const controller = new AbortController();
     controller.abort();

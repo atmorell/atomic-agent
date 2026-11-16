@@ -41,6 +41,7 @@ import type { DeclaredInputsRegistry } from "../os/fs/fs-declared-inputs.js";
 import {
   type CheckRepeatState,
   CHECKS_GREEN_HOLD_NOTICE,
+  CHECKS_STOPPED_HOLD_NOTICE,
   checkFailureSignature,
   formatCheckResultSteer,
   formatRewriteSteer,
@@ -1413,6 +1414,11 @@ async function runOneTask(
   // the worker in 4 of 7 green runs; it wrote its own tests to 600 s).
   // A change after it clears it until the checks have run again.
   let checksGreen = false;
+  // The last finished run failed only checks the worker was told to stop
+  // on: the next step may only reply, and the judge rules on them (k8ad,
+  // 16-11-2026: stopped at 282 s, it edited against a wrong assert to
+  // 600 s). Cleared by a change, like `checksGreen`.
+  let checksStopped = false;
   // Per check index: the last failure's signature and how many runs in a
   // row returned it. Measured (k8z): one wrong assert was steered in 8
   // times until the run timed out; the third identical failure now stops
@@ -1472,6 +1478,13 @@ async function runOneTask(
       // Green only for the code it ran: a write during the run reopens.
       checksGreen = failed === 0 && !changedSinceCheck;
       const repeats = repeatStatesFor(outcomes);
+      checksStopped =
+        failed > 0 &&
+        !changedSinceCheck &&
+        outcomes.every((outcome, i) => {
+          const state = repeats.get(i);
+          return outcome.ok || state === "stop" || state === "silent";
+        });
       const silent = [...repeats.values()].filter((state) => state === "silent").length;
       const stopped = [...repeats.values()].filter((state) => state !== "doubt").length;
       // Only failures the worker was told to stop on: nothing new to say.
@@ -1829,8 +1842,10 @@ async function runOneTask(
   // fan-out runs them all again afterwards anyway.
   const checksDone = new AbortController();
   const checkSignal = AbortSignal.any([turnSignal, checksDone.signal]);
-  // Closes the worker once its checks are green (`checksGreen`).
+  // Closes the worker once its checks are green (`checksGreen`) or every
+  // check still failing is one it was told to stop on (`checksStopped`).
   const greenHold: StepHold = { terminalOnly: true, notice: CHECKS_GREEN_HOLD_NOTICE };
+  const stoppedHold: StepHold = { terminalOnly: true, notice: CHECKS_STOPPED_HOLD_NOTICE };
   const waitForCheck = async (stepIndex: number): Promise<StepHold | undefined> => {
     const pending = pendingCheck;
     if (checkSignal.aborted) return undefined;
@@ -1853,12 +1868,22 @@ async function runOneTask(
         if (onAbort !== undefined) checkSignal.removeEventListener("abort", onAbort);
       }
     }
-    if (!checksGreen || checkSignal.aborted) return undefined;
-    deps.logger?.info("fusion: worker's checks all passed — this step takes only reply", {
-      taskId: task.id,
-      stepIndex,
-    });
-    return greenHold;
+    if (checkSignal.aborted) return undefined;
+    if (checksGreen) {
+      deps.logger?.info("fusion: worker's checks all passed — this step takes only reply", {
+        taskId: task.id,
+        stepIndex,
+      });
+      return greenHold;
+    }
+    if (checksStopped) {
+      deps.logger?.info("fusion: worker's failing checks all stopped — this step takes only reply", {
+        taskId: task.id,
+        stepIndex,
+      });
+      return stoppedHold;
+    }
+    return undefined;
   };
   try {
     const turn = await deps.runTurn(session, brief, {
@@ -1981,6 +2006,7 @@ async function runOneTask(
             wroteThisStep = true;
             changedSinceCheck = true;
             checksGreen = false;
+            checksStopped = false;
             try {
               checkRewrite(result.tool, result.details);
             } catch {

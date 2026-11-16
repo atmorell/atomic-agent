@@ -280,6 +280,18 @@ export const CHECKS_RUN_BY_RUNTIME_RULE =
 export const CHECKS_GREEN_HOLD_NOTICE =
   "Every check of your task passed: this step takes only reply. Name the files you wrote and what each does.";
 
+/**
+ * The `### notice` of the step after a run where every check still
+ * failing had failed the same way three times (`stop`, then `silent`):
+ * that step takes only `reply`/`finish` (`worker-runner.ts`). The fan-out
+ * runs the check again and the judge, seeing its spec and failure, can
+ * void it when it contradicts the request. Measured (k8ad, 16-11-2026):
+ * the stop advice alone did not close the core worker; it edited against
+ * a wrong assert from 282 s to the 600 s limit.
+ */
+export const CHECKS_STOPPED_HOLD_NOTICE =
+  "Every check still failing has failed the same way three times: this step takes only reply. Name the files you wrote and each check you stopped on.";
+
 const CHECK_STEER_SPEC_CHARS = 140;
 const CHECK_STEER_MAX_FAILURES = 3;
 
@@ -312,16 +324,63 @@ export const CHECK_DOUBT_NOTE =
 export const CHECK_STOP_NOTE =
   "It failed the same way three times: stop working on it. The judge sees it; do not edit for it again.";
 
+/** A traceback frame in a check's own inline script (`python -c` / `python -`). */
+const CHECK_SCRIPT_FRAME = /File "<(string|stdin)>", line (\d+)/g;
+/** The raised class on a traceback's last line, not a `raise X(` source line. */
+const RAISED_CLASS = /\b([A-Z][\w.]*(?:Error|Exception|Exit|Interrupt))\b(?!\s*\()/g;
+
 /**
- * A failure's identity across runs: its detail without the run's timing
- * and the throwaway copy's directories, which differ on every run.
+ * A failure's identity across runs. When the check is an inline script
+ * that raised, it is the script's own line(s) plus the raised class: the
+ * message and the code under test's line numbers change with every edit
+ * while the same assert keeps failing. Measured (k8ak, 16-11-2026): one
+ * wrong assert failed 5 runs in a row and never reached doubt, because
+ * each run's message differed. Otherwise the detail without the run's
+ * timing and the throwaway copy's directories, which differ every run.
  */
 export function checkFailureSignature(detail: string): string {
+  const frames = [...detail.matchAll(CHECK_SCRIPT_FRAME)].map((m) => m[2]);
+  if (frames.length > 0) {
+    const raised = [...detail.matchAll(RAISED_CLASS)].at(-1)?.[1];
+    return `check-line:${frames.join(">")}${raised === undefined ? "" : ` ${raised}`}`;
+  }
   return detail
     .replace(/\b\d+(?:\.\d+)? ?(?:ms|s)\b/g, "#")
     .replace(/(?:[A-Za-z]:)?[\\/](?:[^\s"'`\\/]+[\\/])+/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+const CHECK_LINE_CHARS = 200;
+
+/**
+ * The source of the check's own line that raised — the outermost frame in
+ * its inline script — so the worker sees which assert failed even when
+ * `describeCheckSpec` clipped the script. `undefined` when the detail
+ * names no such frame or the check carries no script to quote.
+ */
+export function failingCheckLine(
+  check: Readonly<Record<string, unknown>>,
+  detail: string,
+): { line: number; source: string } | undefined {
+  const frame = /File "<(string|stdin)>", line (\d+)/.exec(detail);
+  if (frame === null) return undefined;
+  const args = Array.isArray(check.args) ? check.args : [];
+  const dashC = args.indexOf("-c");
+  const script =
+    frame[1] === "stdin"
+      ? check.stdin
+      : dashC >= 0
+        ? args[dashC + 1]
+        : undefined;
+  if (typeof script !== "string") return undefined;
+  const line = Number(frame[2]);
+  const source = script.split(/\r?\n/)[line - 1]?.trim();
+  if (source === undefined || source.length === 0) return undefined;
+  return {
+    line,
+    source: source.length > CHECK_LINE_CHARS ? `${source.slice(0, CHECK_LINE_CHARS)}…` : source,
+  };
 }
 
 /**
@@ -343,8 +402,12 @@ export function formatCheckResultSteer(
   if (failed.length === 0) {
     return `The runtime ran your task's ${total} check${total === 1 ? "" : "s"} after your last change: all passed. Your task is done: reply now, naming the files you wrote.`;
   }
-  const line = ({ outcome, check }: (typeof failed)[number]) =>
-    `- \`${describeCheckSpec(check)}\`: ${outcome.detail}`;
+  const line = ({ outcome, check }: (typeof failed)[number]) => {
+    const failing = failingCheckLine(check, outcome.detail);
+    const quoted =
+      failing === undefined ? "" : `\n  failing check line ${failing.line}: \`${failing.source}\``;
+    return `- \`${describeCheckSpec(check)}\`: ${outcome.detail}${quoted}`;
+  };
   const open = failed.filter(({ state }) => state === undefined || state === "doubt");
   const stopped = failed.filter(({ state }) => state === "stop");
   const silent = failed.length - open.length - stopped.length;

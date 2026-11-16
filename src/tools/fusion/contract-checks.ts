@@ -288,6 +288,22 @@ function head(text: string, cap: number): string {
   return flat.length > cap ? `${flat.slice(0, cap)}…` : flat;
 }
 
+/** Of a clipped check detail, the share kept from its start. */
+const CHECK_DETAIL_HEAD_CHARS = 230;
+
+/**
+ * A verdict flattened and clipped to `cap`, keeping its start and its end:
+ * a traceback names the check's own line first and the raised error last,
+ * and the worker, the repeat signature and the judge need both. A
+ * head-only clip dropped the error of every deep traceback.
+ */
+function headAndTail(text: string, cap: number): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= cap) return flat;
+  const head = Math.min(CHECK_DETAIL_HEAD_CHARS, cap - 2);
+  return `${flat.slice(0, head)} …${flat.slice(-(cap - head - 2))}`;
+}
+
 /**
  * Run the contract's checks through the wired runner. Never throws and
  * never invents a pass: no runner, an aborted turn or a runner that
@@ -325,7 +341,7 @@ export async function runContractChecks(
     if (result === undefined) {
       return { ...task, ok: false, detail: NO_RESULT_DETAIL };
     }
-    const detail = head(
+    const detail = headAndTail(
       result.error ?? result.summary ?? (result.ok ? "passed" : "failed"),
       CHECK_DETAIL_CHARS,
     );
