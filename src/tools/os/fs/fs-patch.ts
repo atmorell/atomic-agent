@@ -9,6 +9,7 @@ import {
   type CompressedToolResult,
 } from "../../../compressor/result-compressor.js";
 import { resolveUserPath } from "../expand-home.js";
+import { checkForeignOwner, refuseForeignOwnerWrite } from "./fs-owner-guard.js";
 import { checkChangedFile } from "./fs-content-check.js";
 import { withParseWarning } from "./fs-parse-check.js";
 import { dryRunFile, type PreviewOutcome } from "./fs-patch-preview.js";
@@ -65,6 +66,14 @@ export function buildOsFsPatchTool(
       if (!args.apply) {
         return buildResult(previews, "dry-run");
       }
+      // A file the fan-out's contract gives another task is refused before
+      // anything lands, so a refused patch writes no file (k8e).
+      const foreign = checkForeignOwner(
+        options.declaredInputs,
+        ctx,
+        previews.map((p) => p.absolute),
+      );
+      if (foreign !== null) return refuseForeignOwnerWrite("os.fs.patch", foreign);
 
       // For live apply we need approval before mutating disk. Preview
       // contents are rebuilt the same way as dry-run, so the approval

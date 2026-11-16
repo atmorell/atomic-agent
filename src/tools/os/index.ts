@@ -179,7 +179,7 @@ export interface RegisterOsToolsOptions extends DangerousToolOptions {
    * and each running worker's parent for the created set; omitted declares nothing.
    */
   declaredInputs?: Pick<DeclaredInputsRegistry, "inputsOf"> &
-    Partial<Pick<DeclaredInputsRegistry, "parentOf">>;
+    Partial<Pick<DeclaredInputsRegistry, "parentOf" | "foreignOwnerOf">>;
   /**
    * Operator policy for the shell guard — today the git remote-sync
    * switch. Predicates rather than values so a toggle flipped live in

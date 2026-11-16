@@ -22,7 +22,7 @@ import {
   type FusionLiveWorkers,
 } from "./escalation.js";
 import type { WorkerPricing } from "./worker-result.js";
-import { resolveContractInputs } from "./contract-inputs.js";
+import { resolveContractInputs, resolveContractOwners } from "./contract-inputs.js";
 import { workerHomeFor } from "./fanout-paths.js";
 import { resolveUserPath } from "../os/expand-home.js";
 import {
@@ -475,7 +475,7 @@ export interface WorkerRunnerDeps {
    * embedders) declares nothing.
    */
   declaredInputs?: Pick<DeclaredInputsRegistry, "declare" | "clear"> &
-    Partial<Pick<DeclaredInputsRegistry, "link">>;
+    Partial<Pick<DeclaredInputsRegistry, "link" | "declareForeign">>;
   /** Progress into the PARENT session's frame. */
   emitEvent: (sessionId: string, event: AgentLoopEvent) => void;
   workingDir: string;
@@ -1015,6 +1015,17 @@ async function runOneTask(
       pathBase ?? workingDir,
     );
     if (inputs.length > 0) deps.declaredInputs?.declare(id, inputs);
+    // The contract's owners (k8e): a path it gives another task is refused
+    // to this worker's file tools (`fs-owner-guard.ts`), so the worker
+    // builds against the contract's names instead of writing a stand-in.
+    const owners = resolveContractOwners(
+      options.contract?.owners,
+      task.id,
+      pathBase ?? workingDir,
+    );
+    if (owners !== null) {
+      deps.declaredInputs?.declareForeign?.(id, owners.foreign, owners.own);
+    }
     // What this worker creates is the agent's for the whole fan-out
     // family, and the reverse: a retry may rewrite the first attempt's file.
     deps.declaredInputs?.link?.(id, options.parentSessionId);

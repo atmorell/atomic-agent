@@ -52,9 +52,11 @@ export interface FsDangerousToolOptions extends DangerousToolOptions {
   /**
    * The files a fan-out's contract declared as inputs for a worker
    * session (`fs-declared-inputs.ts`), which `os.fs.write` never
-   * replaces. Omitted declares nothing.
+   * replaces, and the paths it gives other tasks, which no file tool
+   * changes (`fs-owner-guard.ts`). Omitted declares nothing.
    */
-  declaredInputs?: Pick<DeclaredInputsRegistry, "inputsOf">;
+  declaredInputs?: Pick<DeclaredInputsRegistry, "inputsOf"> &
+    Partial<Pick<DeclaredInputsRegistry, "foreignOwnerOf">>;
 }
 
 /**

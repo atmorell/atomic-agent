@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import type { ToolDefinition } from "../../tool-registry.js";
 import { OS_FS_MOVE_CONTRACT, parseMoveArgs } from "./fs-move-contract.js";
+import { checkForeignOwner, refuseForeignOwnerWrite } from "./fs-owner-guard.js";
 import {
   NODE_MOVE_FS,
   isStrictlyInside,
@@ -70,6 +71,12 @@ export function buildOsFsMoveTool(
           `os.fs.move: \`${touched}\` is an input of this task; it is not moved or replaced — copy what you need with os.fs.write instead`,
         );
       }
+      // Either end on a path another task owns changes that task's file (k8e).
+      const foreign = checkForeignOwner(options.declaredInputs, ctx, [
+        ...sources,
+        ...dests,
+      ]);
+      if (foreign !== null) return refuseForeignOwnerWrite(NAME, foreign);
       await requireFsApproval(
         options,
         {

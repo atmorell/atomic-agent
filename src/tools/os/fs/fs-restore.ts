@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { compressToolResult } from "../../../compressor/result-compressor.js";
 import { resolveUserPath } from "../expand-home.js";
+import { checkForeignOwner, refuseForeignOwnerWrite } from "./fs-owner-guard.js";
 import { formatBytes, formatLines } from "./fs-replace-guard.js";
 import {
   requireFsApproval,
@@ -38,6 +39,9 @@ export function buildOsFsRestoreTool(
         );
       }
       const absolute = resolveUserPath(path, ctx.workingDir);
+      // Another task's path in the fan-out's contract (k8e, `fs-owner-guard.ts`).
+      const foreign = checkForeignOwner(options.declaredInputs, ctx, [absolute]);
+      if (foreign !== null) return refuseForeignOwnerWrite("os.fs.restore", foreign);
       const copy = await store.latestCopy(ctx.workingDir, absolute);
       if (copy === null) {
         throw new Error(

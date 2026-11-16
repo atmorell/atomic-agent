@@ -3,6 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { compressToolResult } from "../../../compressor/result-compressor.js";
 import { resolveUserPath } from "../expand-home.js";
+import { checkForeignOwner, refuseForeignOwnerWrite } from "./fs-owner-guard.js";
 import { categorizeFsMutation } from "./fs-approval-scope.js";
 import { checkChangedFile } from "./fs-content-check.js";
 import {
@@ -52,6 +53,10 @@ export function buildOsFsWriteTool(
     async run(rawArgs, ctx) {
       const { path, content, mode, overwrite } = parseWriteArgs(rawArgs);
       const absolute = resolveUserPath(path, ctx.workingDir);
+      // A path the fan-out's contract gives another task is that task's
+      // to write, whatever `overwrite` says (k8e, `fs-owner-guard.ts`).
+      const foreign = checkForeignOwner(options.declaredInputs, ctx, [absolute]);
+      if (foreign !== null) return refuseForeignOwnerWrite("os.fs.write", foreign);
 
       // A file the request names as an input is not replaced, whatever
       // `overwrite` says (F51, ATO-851, `fs-input-guard.ts`). Decided on the

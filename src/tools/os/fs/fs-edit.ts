@@ -8,6 +8,7 @@ import {
   type CompressedToolResult,
 } from "../../../compressor/result-compressor.js";
 import { resolveUserPath } from "../expand-home.js";
+import { checkForeignOwner, refuseForeignOwnerWrite } from "./fs-owner-guard.js";
 import { checkChangedFile } from "./fs-content-check.js";
 import {
   clampDiffPreview,
@@ -52,6 +53,9 @@ export function buildOsFsEditTool(
     async run(rawArgs, ctx) {
       const args = parseArgs(rawArgs);
       const absolute = resolveUserPath(args.path, ctx.workingDir);
+      // Another task's path in the fan-out's contract (k8e, `fs-owner-guard.ts`).
+      const foreign = checkForeignOwner(options.declaredInputs, ctx, [absolute]);
+      if (foreign !== null) return refuseForeignOwnerWrite("os.fs.edit", foreign);
       // Asked before the file is read for the edit: did it change since
       // the model last read it (ATO-659)? Either way the edit proceeds;
       // the answer only adds a notice to the result or the error.

@@ -66,6 +66,42 @@ export function renderContractInputs(
   ];
 }
 
+/** The id prefix of autoverify's repair worker (`autoverify.ts`): it repairs across owners. */
+const AUTOVERIFY_REPAIR_PREFIX = "autoverify-repair-";
+
+/**
+ * The contract's `owners` for one task, as its worker's tools will spell
+ * the paths (k8e): `foreign` maps each path another task owns to that
+ * task's id, `own` lists the paths this task owns — the task itself, or
+ * the task it was split from (`parent/child` ids). `null` when nothing is
+ * foreign, so no guard is armed: no contract, no owners, a task that owns
+ * them all, or autoverify's repair worker. Globs and unresolvable entries
+ * are left out, as for inputs.
+ */
+export function resolveContractOwners(
+  owners: Readonly<Record<string, string>> | undefined,
+  taskId: string,
+  workingDir: string,
+): { foreign: Map<string, string>; own: string[] } | null {
+  if (owners === undefined || taskId.startsWith(AUTOVERIFY_REPAIR_PREFIX)) {
+    return null;
+  }
+  const foreign = new Map<string, string>();
+  const own: string[] = [];
+  for (const [path, owner] of Object.entries(owners)) {
+    if (GLOB_CHARS.test(path)) continue;
+    let absolute: string;
+    try {
+      absolute = resolveUserPath(path, workingDir);
+    } catch {
+      continue;
+    }
+    if (owner === taskId || taskId.startsWith(`${owner}/`)) own.push(absolute);
+    else foreign.set(absolute, owner);
+  }
+  return foreign.size === 0 ? null : { foreign, own };
+}
+
 /**
  * The declared inputs as the worker's tools will spell them: absolute,
  * resolved against `workingDir` the way `resolveUserPath` resolves a
