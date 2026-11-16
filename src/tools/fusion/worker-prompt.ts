@@ -207,6 +207,21 @@ export const EDIT_NOT_REWRITE_RULE =
 export const STDIN_SELF_TEST_RULE =
   "- To try your code without a file, run `os.shell.run` with `cmd` `python` (or `node`), `args` `[\"-\"]` and the script in `stdin`: it runs in the working directory, so your modules import. Never write a test or scratch file your task does not ask for.";
 
+/**
+ * Measured (k8h, 16-11-2026): the core worker wrote `formel.py` at 119 s
+ * and read it back three times before its first run at 303 s. The one
+ * wrong character (`r'|(',')'`) was valid Python; only a run showed it,
+ * as a TypeError naming the line. `worker-runner.ts` steers once on the
+ * first read of a module written since the last run.
+ */
+export const RUN_BEFORE_REREAD_RULE =
+  "- After writing a module, run it once (a short `stdin` script that imports it and calls it) before you read it again: reading back what you just wrote shows what you meant, a run shows what it does.";
+
+/** The one steer sent when a worker reads a module it has not run since writing it. */
+export function formatRunBeforeRereadSteer(path: string): string {
+  return `You are reading ${path} again without having run it since you wrote it. Run it first: one \`os.shell.run\` with a short script on \`stdin\` that imports it and calls the part in doubt. Then read only the lines the error names.`;
+}
+
 /** The one steer sent when a worker rewrites a file it wrote itself. */
 export function formatRewriteSteer(path: string): string {
   return `You just wrote ${path} whole again although you had already written it in this task. For every further change to a file you wrote, use \`os.fs.edit\` with only the lines that change — a whole-file rewrite costs minutes here.`;
@@ -274,6 +289,7 @@ export function renderWorkerBrief(
     siblingFilesRule(options.contract !== undefined),
     EDIT_NOT_REWRITE_RULE,
     STDIN_SELF_TEST_RULE,
+    RUN_BEFORE_REREAD_RULE,
     BROWSER_CODE_RULE,
     ...(request.length > 0 ? [EXACT_SPELLING_RULE] : []),
     `- Finish with \`reply\` carrying the concise result of this task (about ${WORKER_REPLY_CHAR_BUDGET} characters at most). That reply is the ONLY thing the orchestrator receives — findings, file paths, decisions and anything it needs to merge your part must be inside it.`,

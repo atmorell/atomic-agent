@@ -16,6 +16,8 @@ import {
   pickOriginalRequest,
   renderStartListing,
   renderWorkerBrief,
+  RUN_BEFORE_REREAD_RULE,
+  formatRunBeforeRereadSteer,
   siblingFilesRule,
   START_LISTING_LIMIT,
   STDIN_SELF_TEST_RULE,
@@ -155,6 +157,18 @@ describe("renderWorkerBrief — siblings and browser code (ATO-919)", () => {
     expect(at).toBeLessThan(brief.indexOf("- Finish with `reply`"));
     expect(STDIN_SELF_TEST_RULE).toContain("`stdin`");
     expect(STDIN_SELF_TEST_RULE).toMatch(/Never write a test or scratch file/);
+  });
+
+  it("tells the worker to run a module before reading it again (k8h)", () => {
+    // k8h: formel.py written at 119 s, read back three times, first run
+    // at 303 s; the one-character bug only showed in a run.
+    const brief = renderWorkerBrief(TASK, { workingDir: "/repo" });
+    const at = brief.indexOf(RUN_BEFORE_REREAD_RULE);
+    expect(at).toBeGreaterThan(brief.indexOf(STDIN_SELF_TEST_RULE));
+    expect(at).toBeLessThan(brief.indexOf("- Finish with `reply`"));
+    expect(RUN_BEFORE_REREAD_RULE).toMatch(/run it once/);
+    expect(formatRunBeforeRereadSteer("/w/formel.py")).toContain("/w/formel.py");
+    expect(formatRunBeforeRereadSteer("/w/formel.py")).toContain("`stdin`");
   });
 });
 

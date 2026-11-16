@@ -2004,3 +2004,68 @@ describe("runWorkerTasks — a rewrite of the worker's own file (k8b)", () => {
     ).toEqual([]);
   });
 });
+
+describe("runWorkerTasks — a re-read of a module not run since it was written (k8h)", () => {
+  type TurnOptions = Parameters<WorkerRunnerDeps["runTurn"]>[2];
+
+  function calls(sequence: ReadonlyArray<readonly [string, string]>) {
+    return async ({ options }: { options: TurnOptions }) => {
+      sequence.forEach(([tool, path], step) => {
+        options.eventHook?.({ type: "step_started", stepIndex: step });
+        options.eventHook?.({
+          type: "llm_event",
+          event: {
+            type: "tool_call_executed",
+            result: { tool, status: "ok", summary: "done", details: { path }, truncated: false },
+            batchIndex: 0,
+            batchSize: 1,
+          },
+        });
+        options.eventHook?.({ type: "step_finished", stepIndex: step, summary: "step done", durationMs: 1 });
+      });
+      return turnResult({ stepCount: sequence.length + 1 });
+    };
+  }
+
+  async function steersFor(sequence: ReadonlyArray<readonly [string, string]>): Promise<string[]> {
+    const steers: string[] = [];
+    const { deps } = harness(calls(sequence));
+    deps.steerWorker = (_id, text) => {
+      steers.push(text);
+      return true;
+    };
+    await runWorkerTasks(deps, {
+      ...BASE,
+      tasks: tasks(1),
+      maxWorkers: 1,
+      signal: new AbortController().signal,
+    });
+    return steers;
+  }
+
+  it("steers once toward a run when the worker reads back a module it has not run", async () => {
+    // k8h: formel.py written at 119 s and read back three times before
+    // the first run at 303 s. Path spelling differs between tools.
+    const steers = await steersFor([
+      ["os.fs.write", "C:\\w\\ark\\formel.py"],
+      ["os.fs.read", "c:/w/ark/formel.py"],
+      ["os.fs.read", "c:/w/ark/formel.py"],
+    ]);
+    expect(steers).toHaveLength(1);
+    expect(steers[0]).toContain("c:/w/ark/formel.py");
+    expect(steers[0]).toContain("`os.shell.run`");
+  });
+
+  it("does not steer a read after a run, of a file it did not write, or of browser JS", async () => {
+    expect(
+      await steersFor([
+        ["os.fs.write", "/w/formel.py"],
+        ["os.shell.run", "/w"],
+        ["os.fs.read", "/w/formel.py"],
+        ["os.fs.read", "/w/README.md"],
+        ["os.fs.write", "/w/js/main.js"],
+        ["os.fs.read", "/w/js/main.js"],
+      ]),
+    ).toEqual([]);
+  });
+});

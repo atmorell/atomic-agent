@@ -34,6 +34,7 @@ import {
 import type { DeclaredInputsRegistry } from "../os/fs/fs-declared-inputs.js";
 import {
   formatRewriteSteer,
+  formatRunBeforeRereadSteer,
   renderWorkerBrief,
   WORKER_REPLY_CHAR_BUDGET,
 } from "./worker-prompt.js";
@@ -331,6 +332,18 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set([
   "os.fs.edit",
   "os.fs.patch",
 ]);
+
+/**
+ * Modules a worker can run on `os.shell.run`'s stdin. Plain `.js` is left
+ * out: it may be browser code, which does not run under node
+ * (`BROWSER_CODE_RULE`).
+ */
+const RUNNABLE_MODULE = /\.(?:py|mjs|cjs)$/i;
+
+/** Path spellings differ between tools on Windows (case, separators). */
+function pathKey(path: string): string {
+  return path.replace(/\\/g, "/").toLowerCase();
+}
 
 /**
  * How many steps must have COMPLETED, none of them a successful write,
@@ -1275,6 +1288,37 @@ async function runOneTask(
       steered: rewriteSteered,
     });
   };
+  // A read of a module this worker wrote with no run since (k8h: written
+  // at 119 s, read back three times, first run at 303 s) is steered once
+  // toward running it. Any `os.shell.run` counts: the worker chose it.
+  const notRunSinceWrite = new Set<string>();
+  let rereadSteered = false;
+  const checkRunBeforeReread = (
+    tool: string,
+    status: string,
+    details: Record<string, unknown> | undefined,
+  ): void => {
+    if (tool === "os.shell.run") {
+      notRunSinceWrite.clear();
+      return;
+    }
+    if (status !== "ok") return;
+    if (WRITE_TOOLS.has(tool)) {
+      for (const path of writtenPathsOf(details)) {
+        if (RUNNABLE_MODULE.test(path)) notRunSinceWrite.add(pathKey(path));
+      }
+      return;
+    }
+    if (rereadSteered || tool !== "os.fs.read" || deps.steerWorker === undefined) return;
+    const path = typeof details?.path === "string" ? details.path : undefined;
+    if (path === undefined || !notRunSinceWrite.has(pathKey(path))) return;
+    rereadSteered = deps.steerWorker(session.id, formatRunBeforeRereadSteer(path));
+    deps.logger?.info("fusion: worker steered to run before re-reading", {
+      taskId: task.id,
+      path,
+      steered: rereadSteered,
+    });
+  };
   const maybeHandBack = (): void => {
     if (declaredFiles === 0 || wroteSomething || handBack.signal.aborted)
       return;
@@ -1610,6 +1654,11 @@ async function runOneTask(
             } catch {
               // A check never takes the worker down.
             }
+          }
+          try {
+            checkRunBeforeReread(result.tool, result.status, result.details);
+          } catch {
+            // A check never takes the worker down.
           }
           currentFingerprints.push(fingerprintToolOutcome(result.tool, result));
           if (result.status === "ok" && !READ_ONLY_TOOLS.has(result.tool)) {
