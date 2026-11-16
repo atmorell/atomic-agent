@@ -138,8 +138,9 @@ function boundedBodyRules(bodyRule: string, unitRule: string, chars: number): st
  * The grammar with its reasoning bound lifted: the body's head line
  * becomes `think-body ::= think-char*`, every other byte identical (the
  * chained `think-body-2 ...` rules of a long bound stay defined but
- * unreferenced, harmless in GBNF). For the forced final step
- * (`reply` / `finish`), which is never cut mid-thought. A grammar
+ * unreferenced, harmless in GBNF). For the loop's reserved final step
+ * (`finalizationStep`), whose `reply` / `finish` is never cut
+ * mid-thought; a step a hook held to `reply` keeps the bound. A grammar
  * without a bounded body (plain profile, budget 0) is returned as is —
  * the same string, so the per-request cache keys on it unchanged.
  */

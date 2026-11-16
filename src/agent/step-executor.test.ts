@@ -6677,7 +6677,7 @@ describe("executeStep reasoning budget and thinking: off (F49)", () => {
   it("the forced final step lifts the bound: a reply or finish is never cut mid-thought", async () => {
     const { seen, baseGrammar } = await runQwen(
       [`thinking</think>\n${CALL}`],
-      { terminalOnly: true },
+      { terminalOnly: true, finalizationStep: true },
       2,
     );
     expect(seen[0]!.grammar).not.toBe(baseGrammar);
@@ -6687,6 +6687,20 @@ describe("executeStep reasoning budget and thinking: off (F49)", () => {
     expect(seen[0]!.grammar).toMatch(
       /^root ::= think-prelude tool-call-array$/m,
     );
+  });
+
+  // k8aw (16-11-2026): a Fusion worker held to reply thought about 7,400
+  // tokens (151 s) before a 1,817-character reply. A step a `beforeStep`
+  // hook held is terminal-only, not the loop's reserved final step.
+  it("a held terminal-only step keeps the configured bound", async () => {
+    const { seen } = await runQwen(
+      [`thinking</think>\n${CALL}`],
+      { terminalOnly: true },
+      2,
+    );
+    expect(seen[0]!.grammar).toContain("think-body ::= think-char{0,8}");
+    expect(seen[0]!.grammar).not.toContain("think-body ::= think-char*");
+    expect(grammarToolNames(seen[0]!.grammar)).toEqual(["finish", "reply"]);
   });
 
   it("llm_raw_completion carries the reasoning estimate in budget units, so a cut reads as >= budget", async () => {

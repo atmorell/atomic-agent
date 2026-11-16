@@ -484,6 +484,7 @@ export class AgentLoop {
                 }
               : {}),
             ...(terminalOnlyStep ? { terminalOnly: true } : {}),
+            ...(finalizationStep ? { finalizationStep: true } : {}),
             ...(replanSet !== null
               ? { toolSet: replanSet }
               : stallSignal?.phase === "cut"

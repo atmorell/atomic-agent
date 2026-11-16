@@ -17,7 +17,7 @@ Thinking=off on a hand-built Qwen prompt uses its explicit disabled marker and p
 
 ## Bounds and wire contract
 
-ReasoningBudgetTokens defaults to 0 (unbounded) since config v78; the grammar body uses an approximately four-characters-per-token bound. Zero retains the unbounded variant. Whitespace between the reasoning-close sentinel and array is bounded. Forced terminal steps use the unbounded reasoning variant. Preserve these distinctions in grammar, unary parsing, streaming and repair prompts.
+ReasoningBudgetTokens defaults to 0 (unbounded) since config v78; the grammar body uses an approximately four-characters-per-token bound. Zero retains the unbounded variant. Whitespace between the reasoning-close sentinel and array is bounded. Only the loop's reserved final step (`finalizationStep`) uses the unbounded reasoning variant; a step a `beforeStep` hook held to reply is terminal-only but keeps the configured bound. Preserve these distinctions in grammar, unary parsing, streaming and repair prompts.
 
 Native-tool wire contracts live under provider/. Strict conversion is per tool, does not close an originally open schema, and tracks which top-level optional arguments were widened to null. Do not drop required nullable data. Emitted strict functions force parallel_tool_calls=false. Nested third-party schemas require inspecting both tagged validation and null normalization rather than assuming built-in flat shapes.
 

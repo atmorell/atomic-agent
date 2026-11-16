@@ -502,17 +502,18 @@ export function stepGrammarToolNames(
 /**
  * The grammar for THIS request. The reasoning prelude first (F49): gone
  * under `thinking: off` (the prompt ends with the template's disabled
- * marker, so the completion starts on the call); unbounded on the forced
- * final step — a `reply` / `finish` is never cut mid-thought; the base
- * grammar's configured bound (`localModels.reasoningBudgetTokens`)
- * otherwise. Then the tool names (`stepGrammarToolNames`). An
+ * marker, so the completion starts on the call); unbounded on the loop's
+ * reserved final step (`finalizationStep`) — the turn's summary is never
+ * cut mid-thought; the base grammar's configured bound
+ * (`localModels.reasoningBudgetTokens`) otherwise, a held terminal-only
+ * step included. Then the tool names (`stepGrammarToolNames`). An
  * unrestricted, non-final step under `thinking: on|auto` sends the base
  * grammar byte-identical.
  */
 export function resolveStepGrammar(
   ctx: Pick<
     StepContext,
-    "terminalOnly" | "toolSet" | "toolFilter" | "toolRole"
+    "terminalOnly" | "finalizationStep" | "toolSet" | "toolFilter" | "toolRole"
   >,
   deps: Pick<StepDependencies, "registry" | "isFusionOrchestrator" | "grammar">,
   descriptors: readonly ToolDescriptor[],
@@ -520,7 +521,7 @@ export function resolveStepGrammar(
 ): string {
   const base = thinkingOff
     ? withoutReasoningPrelude(deps.grammar)
-    : ctx.terminalOnly
+    : ctx.finalizationStep
       ? withUnboundedReasoningPrelude(deps.grammar)
       : deps.grammar;
   const names = stepGrammarToolNames(ctx, deps, descriptors);

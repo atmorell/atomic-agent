@@ -379,13 +379,23 @@ export interface StepContext {
   maxOutputTokens?: number;
   /**
    * Only the terminal `reply`/`finish` tools may run this step (the
-   * loop's reserved final step). The prompt's tool catalog is left as it
+   * loop's reserved final step, or a step a `beforeStep` hook held).
+   * The prompt's tool catalog is left as it
    * is — it is stable-prefix bytes, and narrowing it for one step moved
    * the session to a cold slot — so the restriction is enforced where a
    * call would run: a non-terminal call gets a refusal as its tool
    * result (`batch-executor.ts`), a tail terminal still lands.
    */
   terminalOnly?: boolean;
+  /**
+   * The loop's reserved final step (a ceiling is about to bite): the
+   * local reasoning prelude runs unbounded there, so the turn's summary
+   * is never cut mid-thought (`resolveStepGrammar`). A step a
+   * `beforeStep` hook held is `terminalOnly` without it and keeps the
+   * configured bound (k8aw, 16-11-2026: a held Fusion worker thought
+   * about 7,400 tokens, 151 s, before a 1,817-character reply).
+   */
+  finalizationStep?: boolean;
   /**
    * The only tool names this step may emit or run (`step-tool-set.ts`)
    * — `terminalOnly` with the names supplied. Narrows the per-request
