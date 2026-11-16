@@ -101,6 +101,13 @@ describe("shouldFallBackToCoreCpuBuild", () => {
     expect(shouldFallBackToCoreCpuBuild({ ...eligible, installedBackend: undefined })).toBe(false);
   });
 
+  // 16-11-2026: a CUDA build that had served the model 30+ times died silently
+  // mid-load when Windows ran out of commit, and the rescue moved the machine to CPU.
+  it("never switches a GPU build that already served a model on this computer", () => {
+    expect(shouldFallBackToCoreCpuBuild({ ...eligible, installedBackendServed: true })).toBe(false);
+    expect(shouldFallBackToCoreCpuBuild({ ...eligible, installedBackendServed: false })).toBe(true);
+  });
+
   it("only reacts to Core's own load failure", () => {
     expect(shouldFallBackToCoreCpuBuild({ ...eligible, error: new CoreRequestError(400, "invalid request") })).toBe(false);
     expect(shouldFallBackToCoreCpuBuild({ ...eligible, error: new Error("Atomic Core request failed") })).toBe(false);
@@ -196,6 +203,13 @@ describe("Core CPU-build rescue with a mocked Core", () => {
   it("does not apply for out of memory, in the answer or in this run's log", () => {
     expect(coreCpuFallbackApplies(dir, new CoreRequestError(500, "Could not load model: failed to allocate buffer, out of memory"))).toBe(false);
     writeFileSync(resolveLogFilePath(dir), "[atomic-agent] launch: model qwen-3.5-4b\nggml_vulkan: ErrorOutOfDeviceMemory\n");
+    expect(coreCpuFallbackApplies(dir, crash())).toBe(false);
+    expect(installs()).toHaveLength(0);
+  });
+
+  it("does not apply once the GPU build has served a model here", () => {
+    const backend = readCoreBackend(dir)!;
+    writeCoreJson(join(coreVersionDir(dir, CORE_VERSION), "backend.json"), { ...backend, servedAt: "2026-11-16T10:00:00.000Z" });
     expect(coreCpuFallbackApplies(dir, crash())).toBe(false);
     expect(installs()).toHaveLength(0);
   });

@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
-import { CORE_VERSION, coreSessionPath, coreVersionDir, writeCoreJson } from "./core-state.js";
+import { CORE_VERSION, coreSessionPath, coreVersionDir, readCoreBackend, writeCoreJson } from "./core-state.js";
 import { coreSessionStatus, loadCoreSession, recoverOrphanedCoreSessions, refreshCoreKeyForUrl, retireIdleCore, stopCoreSession, stopIdleCore } from "./core-sessions.js";
 import { connectCore, ensureCore } from "./core-client.js";
 
@@ -57,6 +57,34 @@ it("a model start asks ensureCore to retire the agent's sessions on an older Cor
   fake.call.mockResolvedValue({ session, created: true });
   await loadCoreSession(dir, { role: "chat", modelId: "test", modelPath: "/test.gguf", port: 19091, args: [] });
   expect(clientOptions).toEqual([{ retireSessions: true }]);
+});
+
+it("stamps the backend once a chat model served with GPU offload, and only then", async () => {
+  const servedAt = () => readCoreBackend(dir)?.servedAt;
+  const load = (role: "chat" | "embedding", args: string[]) =>
+    loadCoreSession(dir, { role, modelId: "test", modelPath: "/test.gguf", port: 19091, args });
+  fake.snapshot.mockResolvedValue({ sessions: [] });
+  fake.call.mockImplementation(async (path: string) => {
+    if (path.endsWith("/load")) throw new Error("load failed");
+    return { cancelled: true };
+  });
+  await expect(load("chat", ["-ngl", "-1"])).rejects.toThrow("load failed");
+  fake.call.mockReset();
+  expect(servedAt()).toBeUndefined();
+  fake.call.mockResolvedValue({ session, created: true });
+  await load("chat", ["-ngl", "0"]);
+  expect(servedAt()).toBeUndefined();
+  fake.call.mockResolvedValue({ session: { ...session, is_embedding: true }, created: true });
+  await load("embedding", ["-ngl", "-1"]);
+  expect(servedAt()).toBeUndefined();
+  fake.call.mockResolvedValue({ session, created: true });
+  await load("chat", ["-ngl", "-1"]);
+  expect(servedAt()).toMatch(/^\d{4}-\d\d-\d\dT/);
+  // Once per install: a later start keeps the first stamp.
+  const backend = readCoreBackend(dir)!;
+  writeCoreJson(join(coreVersionDir(dir, CORE_VERSION), "backend.json"), { ...backend, servedAt: "first" });
+  await load("chat", ["-ngl", "-1"]);
+  expect(servedAt()).toBe("first");
 });
 
 function idleCore(sessions: unknown[], shutdown: () => unknown = () => ({ ok: true, stopping: true }), embedding?: { enabled: boolean }) {

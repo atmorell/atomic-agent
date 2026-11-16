@@ -3,7 +3,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CoreUnavailableError } from "./core-errors.js";
 import { setTimeout as delay } from "node:timers/promises";
-import { activeCoreVersion, coreLoopbackPort, isSupportedCoreVersion, coreRoot, coreSessionPath, orphanedCoreSession, readCoreBackend, readCoreJson, writeCoreJson, type CoreSession, type CoreSessionRecord } from "./core-state.js";
+import { activeCoreVersion, coreLoopbackPort, isSupportedCoreVersion, coreRoot, coreSessionPath, noteCoreBackendServed, orphanedCoreSession, readCoreBackend, readCoreJson, writeCoreJson, type CoreSession, type CoreSessionRecord } from "./core-state.js";
 import { connectCore, ensureCore, withCoreClient } from "./core-client.js";
 import { shutdownIdleCoreClient } from "./core-idle.js";
 import { noteReleaseTimeout, RELEASE_WAIT_MS, waitForProcessRelease } from "../server/process-release.js";
@@ -27,6 +27,13 @@ export function coreLoadOverrides(args: readonly string[]): Record<string, unkno
   // (`--no-mmproj-offload`); the llama-server engine offloads it.
   return { ctx_size: ctx, parallel, concurrent_mode: false, auto_unload: false,
     mtp: false, dflash: false, offload_mmproj: true, extra_args: extras.join(" ") };
+}
+
+/** Whether the load args put layers on a GPU: the last `-ngl` given is not 0. */
+function offloadsLayers(args: readonly string[]): boolean {
+  const i = Math.max(args.lastIndexOf("-ngl"), args.lastIndexOf("--n-gpu-layers"), args.lastIndexOf("--gpu-layers"));
+  const value = i >= 0 ? args[i + 1] : undefined;
+  return value !== undefined && value.trim() !== "0";
 }
 
 export async function loadCoreSession(dataDir: string, options: {
@@ -65,6 +72,7 @@ export async function loadCoreSession(dataDir: string, options: {
       }
       const record: CoreSessionRecord = { ...s, provider: backend.provider, coreVersion: backend.coreVersion, instanceId: client.instanceId };
       writeCoreJson(coreSessionPath(dataDir, options.role), record);
+      if (options.role === "chat" && offloadsLayers(options.args)) noteCoreBackendServed(dataDir, backend);
       return s;
     } catch (err) {
       // Keep the request alive until Core answers cancellation: aborting only the

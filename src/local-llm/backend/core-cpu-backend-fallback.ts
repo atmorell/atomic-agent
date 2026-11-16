@@ -77,13 +77,18 @@ function isCoreLoadFailure(error: unknown): error is CoreRequestError {
  * tried once. Conservative on purpose, since a wrong switch leaves the
  * machine on a much slower build: Windows x64 only (Windows on ARM has
  * one build), `coreBackendVariant` still `"auto"` (`"cpu"` is already
- * there), the active Core backend a GPU build, and the error Core's own
- * load failure that names neither memory, a missing or unreadable model,
- * a busy port nor a timeout, in its text or in this run's log. Pure.
+ * there), the active Core backend a GPU build that has not yet served a
+ * model here, and the error Core's own load failure that names neither
+ * memory, a missing or unreadable model, a busy port nor a timeout, in its
+ * text or in this run's log. A build that has served is left alone: a
+ * later crash on it is this machine's state, not the build (Windows ends
+ * a load that runs out of commit without an out-of-memory line). Pure.
  */
 export function shouldFallBackToCoreCpuBuild(opts: {
   /** `readCoreBackend(dataDir)?.backend`: the active Core backend id. */
   installedBackend: string | undefined;
+  /** Whether that install already served a chat model with GPU offload (`servedAt`). */
+  installedBackendServed?: boolean;
   /** Configured `localModels.managed.coreBackendVariant`. */
   configuredVariant: CoreBackendVariant;
   /** What `startDaemon` / `startChatAndEmbeddingDaemons` rejected with. */
@@ -97,6 +102,7 @@ export function shouldFallBackToCoreCpuBuild(opts: {
   if ((opts.arch ?? process.arch) !== "x64") return false;
   if (opts.configuredVariant !== "auto") return false;
   if (!opts.installedBackend || isCoreWindowsCpuBackend(opts.installedBackend)) return false;
+  if (opts.installedBackendServed) return false;
   if (!isCoreLoadFailure(opts.error)) return false;
   const text = `${opts.error.message} ${opts.error.code ?? ""}`;
   if (NOT_A_BUILD_CRASH.some(pattern => pattern.test(text))) return false;
@@ -120,8 +126,10 @@ function readCurrentRunLog(dataDir: string): string {
  * `coreBackendVariant` and the log itself.
  */
 export function coreCpuFallbackApplies(dataDir: string, error: unknown): boolean {
+  const backend = readCoreBackend(dataDir);
   return shouldFallBackToCoreCpuBuild({
-    installedBackend: readCoreBackend(dataDir)?.backend,
+    installedBackend: backend?.backend,
+    installedBackendServed: Boolean(backend?.servedAt),
     configuredVariant: getConfiguredCoreBackendVariant(),
     error,
     logText: readCurrentRunLog(dataDir),

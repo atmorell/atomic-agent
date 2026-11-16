@@ -24,6 +24,12 @@ export interface CoreBackend {
   backend: string;
   binary: string;
   installedAt: string;
+  /**
+   * When this install first served a chat model with layers offloaded to
+   * the GPU (`noteCoreBackendServed`). A new install writes a record
+   * without it.
+   */
+  servedAt?: string;
 }
 export interface CoreSession {
   pid: number;
@@ -83,6 +89,19 @@ export function activeCoreVersion(dataDir: string): string {
 export function readCoreBackend(dataDir: string, version = activeCoreVersion(dataDir)): CoreBackend | null {
   const record = readCoreJson<CoreBackend>(join(coreVersionDir(dataDir, version), "backend.json"));
   return record?.coreVersion === version && typeof record.binary === "string" && existsSync(record.binary) ? record : null;
+}
+/**
+ * Stamp `servedAt` on the backend record once, after this install served a
+ * chat model with GPU offload: a build that has worked on this computer is
+ * not the cause of a later crash (the CPU-build rescue reads it). Called
+ * under the engine operation lock, so no install rewrites the record
+ * meanwhile. Best-effort: a record that cannot be written stays unstamped.
+ */
+export function noteCoreBackendServed(dataDir: string, backend: CoreBackend): void {
+  if (backend.servedAt) return;
+  try {
+    writeCoreJson(join(coreVersionDir(dataDir, backend.coreVersion), "backend.json"), { ...backend, servedAt: new Date().toISOString() });
+  } catch { /* the rescue stays as cautious as before */ }
 }
 /**
  * What this agent turned on in Core's embedding module, so status and stop
