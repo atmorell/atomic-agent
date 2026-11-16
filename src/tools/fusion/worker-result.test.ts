@@ -14,6 +14,7 @@ import {
   WORKER_RECORDED_RUNS,
   WORKER_OPERATOR_ONLY_NOTE,
   WorkerRunCollector,
+  failingFrameFiles,
   readCommandRun,
   classifyWorkerStatus,
   delegateOutcome,
@@ -1285,11 +1286,50 @@ describe("the advisor's evidence (k8h)", () => {
     expect(evidence).not.toContain("README text");
   });
 
-  it("drops a failure once a later run passes, and stays under its cap", () => {
+  it("keeps a passing last run, with an older failure labelled older (k8o)", () => {
+    // k8o: the advisor never saw "elapsed 10.47s" because the run passed.
     const c = new WorkerRunCollector();
-    c.observe(toolExecuted("os.shell.run", "error", "key: boom", { exitCode: 1 }));
-    c.observe(toolExecuted("os.shell.run", "ok", "3 passed", { exitCode: 0 }));
     expect(c.evidence()).toBe("");
+    c.observe(toolExecuted("os.shell.run", "error", "key: boom", { exitCode: 1 }));
+    c.observe(toolExecuted("os.shell.run", "ok", "chain Z99: 2574.0 elapsed 10.47s", { exitCode: 0 }));
+    const evidence = c.evidence();
+    expect(evidence).toContain("### Last run (passed)\nchain Z99: 2574.0 elapsed 10.47s");
+    expect(evidence).toContain("### Earlier failing run\nkey: boom");
+    expect(evidence.indexOf("Last run")).toBeLessThan(evidence.indexOf("Earlier"));
+    c.observe(toolExecuted("os.shell.run", "error", "key: again", { exitCode: 2 }));
+    expect(c.evidence()).toContain("### Last failing run\nkey: again");
+    expect(c.evidence()).not.toContain("### Last run (passed)");
+  });
+
+  it("says how long a passing last run took", () => {
+    const c = new WorkerRunCollector();
+    c.observe(toolExecuted("os.shell.run", "ok", "ALL OK", { exitCode: 0, durationMs: 10_470 }));
+    expect(c.evidence()).toContain("### Last run (passed, 10.5 s)\nALL OK");
+    expect(c.lastFailingRun()).toBeUndefined();
+    c.observe(toolExecuted("os.shell.run", "error", "key: boom", { exitCode: 1 }));
+    expect(c.lastFailingRun()).toContain("key: boom");
+  });
+
+  it("names a failing run's frames in output order (k8o)", () => {
+    const run = [
+      "Traceback (most recent call last):",
+      '  File "C:\\w\\test_ark.py", line 12, in test_cycle',
+      '  File "C:\\w\\ark\\ark.py", line 131, in _recompute',
+      "TypeError: 'NoneType' object is not iterable",
+      "test_ark.py:40: in test_sum",
+      "ark\\formel.py:77: ZeroDivisionError",
+    ].join("\n");
+    expect(failingFrameFiles(run)).toEqual([
+      "C:\\w\\test_ark.py",
+      "C:\\w\\ark\\ark.py",
+      "test_ark.py",
+      "ark\\formel.py",
+    ]);
+    expect(failingFrameFiles("3 passed")).toEqual([]);
+  });
+
+  it("stays under its cap", () => {
+    const c = new WorkerRunCollector();
     c.observe(toolExecuted("os.fs.write", "ok", "w", { path: "/r/a.py" }));
     for (let i = 0; i < 5; i += 1) {
       c.observe(toolExecuted("os.fs.read", "ok", String(i).repeat(5_000), { path: "/r/a.py" }));

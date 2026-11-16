@@ -87,12 +87,12 @@ export function isAutoVerifyMounted(
  * exactly the block a machine-less build renders.
  */
 export const FUSION_GUIDANCE = [
-  "You orchestrate: read enough to decide, plan, delegate the doing, review the results.",
+  "You orchestrate: read enough to decide, plan, delegate the doing, review results.",
   // k8a (16-11-2026): one six-file task ran 543 s while the tests task
   // was done at 180 s and its slot sat idle; the fan-out is as slow as
   // its longest task. Paid for by trimming the two lines after it.
   "Plan in the open and delegate in the same turn — never stop at the plan: list the independent parts, a big one per worker, small ones shared; the longest sets the pace: split an outsized one along a `contract`.",
-  "One task per part, in one `fusion.delegate` call; its `files` name the paths it will produce (approved once, so workers can write). Each `instructions` must stand alone: workers see the operator's request, not this chat, and cannot ask.",
+  "One task per part, in one `fusion.delegate` call; its `files` name the paths it will produce (approved once for workers). Each `instructions` must stand alone: workers see the operator's request, not this chat, and cannot ask.",
   // k8i (16-11-2026): the judge sent io back once over a 6-decimal
   // format the brief only described; a worker runs given examples first
   // (`STDIN_SELF_TEST_RULE`). Paid for by dropping "You choose
@@ -101,15 +101,20 @@ export const FUSION_GUIDANCE = [
   // k8k: the full-size example (a 2574-cell chain) passed in 56 s and
   // the worker replied done; a time limit makes slow a failing run.
   // Paid for by the shorter wording here and in four lines below.
-  "Give the trickiest part 4-6 input -> expected examples to run first, one full-size with a time limit.",
-  "Tools that change things are refused for you by design.",
+  // k8o: the brief prescribed "recompute all values after each set" and
+  // a 10 s limit on a 2574-cell chain; the worker measured 10.47 s and
+  // spent ~250 s failing to speed up the design it was told to use
+  // (Fable, same day). Paid for by "Mutating tools" below and by
+  // shorter wording in the first, second, rework and "Yours alone" lines.
+  "Give the trickiest part 4-6 input -> expected examples to run first, one full-size with a time limit your design meets: no redo-all per change.",
+  "Mutating tools are refused for you by design.",
   "Keep the design and judgement: read every reply against its brief.",
   VERIFY_LINE,
-  "Rework goes back out: `failed`, `cancelled`, `needs_orchestrator` or not good enough is another `fusion.delegate` saying what was wrong and what good looks like.",
+  "Rework goes back out: `failed`, `cancelled`, `needs_orchestrator` or weak is another `fusion.delegate` saying what was wrong and what good looks like.",
   // F43: the status table now says `replaced the user's file sales.csv
   // (2,401 → 9 lines)` on the row; this is what to do about it.
   "A task that replaced an existing file is not done until the file is restored (`os.fs.restore` in a worker) or the replacement was asked for.",
-  "Yours alone: the decision asked of you, a part that only makes sense with this conversation, anything needing approval.",
+  "Yours alone: the decision asked of you, a part that only makes sense with this conversation, approvals.",
   "Call `fusion.delegate` on its own, never alongside other calls.",
 ].join("\n");
 

@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RunTurnResult } from "../../agent/agent-loop.js";
 import type { AgentLoopEvent } from "../../agent/agent-contract.js";
@@ -471,5 +472,148 @@ describe("the advisor sees the worker's evidence and is asked for one edit (k8h)
     expect(prompt).toMatch(/Never tell it to rewrite or re-create a file/);
     expect(prompt).not.toMatch(/which file to write/);
     expect(prompt).toContain("(none recorded");
+  });
+
+  it("asks for a design when a run passes slowly again after the worker changed its files (k8o)", async () => {
+    // k8o: 10.47 s against a 10 s limit; ~250 s alone on speeding up the
+    // design the brief prescribed, with no advisor asked.
+    const run = (ms: number) =>
+      executed("os.shell.run", "ok", `chain Z99: 2574.0 elapsed ${ms / 1000}s`, { exitCode: 0, durationMs: ms });
+    const prompts: string[] = [];
+    const advised = (fast: boolean) =>
+      harness(
+        async (_s, options) => {
+          const hook = options.eventHook;
+          hook?.(run(fast ? 2_900 : 10_470));
+          hook?.({ type: "step_finished", stepIndex: 0, summary: "", durationMs: 1 } as AgentLoopEvent);
+          hook?.(executed("os.fs.edit", "ok", "edited", { path: "/repo/ark/ark.py" }));
+          hook?.(run(fast ? 2_800 : 9_800));
+          await flush();
+          return done();
+        },
+        {
+          escalationComplete: async ({ prompt }) => {
+            prompts.push(prompt);
+            return {
+              content: "ark/ark.py:131: recompute only the cells that depend on the changed one.",
+              usage: { promptTokens: 1_000, completionTokens: 200, totalTokens: 1_200 },
+            };
+          },
+        },
+      );
+    const quick = advised(true);
+    await runWorkerTasks(quick.deps, {
+      ...BASE,
+      tasks: TASK,
+      signal: new AbortController().signal,
+      escalation: { target: TARGET, pricing: PRICING },
+    });
+    expect(prompts).toEqual([]);
+
+    const slow = advised(false);
+    const [row] = await runWorkerTasks(slow.deps, {
+      ...BASE,
+      tasks: TASK,
+      signal: new AbortController().signal,
+      escalation: { target: TARGET, pricing: PRICING },
+    });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("passes but too slow: a run passed in 9.8 s");
+    expect(prompts[0]).toContain("the defect is the design");
+    expect(prompts[0]).toContain("### Last run (passed, 9.8 s)");
+    expect(row!.notes?.join("\n")).toMatch(/escalated to big as advisor \(passes but too slow/);
+  });
+
+  it("steers a worker whose failing run ends in another task's file instead of asking the advisor (k8o)", async () => {
+    // k8o: the tests worker's run failed inside the core worker's
+    // ark/ark.py; the advisor it asked sent it to edit that file.
+    const ROOT = resolve("/repo-k8o");
+    const tasks: DelegateTask[] = [
+      { id: "kerne", title: "Core", instructions: "write ark/ark.py", files: ["ark/ark.py"] },
+      { id: "rest", title: "Rest", instructions: "write test_ark.py", files: ["test_ark.py"] },
+    ];
+    const traceback = (innermost: string) =>
+      [
+        "Traceback (most recent call last):",
+        `  File "${resolve(ROOT, "test_ark.py")}", line 3, in <module>`,
+        `  File "${innermost}", line 131, in _recompute`,
+        "TypeError: 'NoneType' object is not iterable",
+      ].join("\n");
+    const scenario = (innermost: string) => {
+      const logs: Array<[string, unknown]> = [];
+      const h = harness(
+        async (session, options) => {
+          const meta = session.metadata?.fusionWorker as { taskId?: string } | undefined;
+          if (meta?.taskId !== "rest") return done();
+          const hook = options.eventHook;
+          hook?.(executed("os.fs.write", "ok", "wrote test_ark.py", { path: resolve(ROOT, "test_ark.py") }));
+          hook?.(executed("os.shell.run", "error", traceback(innermost), { exitCode: 1 }));
+          for (let i = 0; i < 6; i += 1) sameStep(hook, i);
+          await flush();
+          return done();
+        },
+        {
+          workingDir: ROOT,
+          logger: { info: (message: string, context?: unknown) => logs.push([message, context]) },
+        },
+      );
+      return { h, logs };
+    };
+
+    const foreign = scenario(resolve(ROOT, "ark", "ark.py"));
+    await runWorkerTasks(foreign.h.deps, {
+      ...BASE,
+      maxWorkers: 2,
+      tasks,
+      signal: new AbortController().signal,
+      escalation: { target: TARGET, pricing: PRICING },
+    });
+    expect(foreign.h.calls).toEqual([]);
+    expect(foreign.h.steers.filter((s) => s.includes('which task "kerne" writes'))).toHaveLength(1);
+    expect(foreign.logs).toContainEqual([
+      "fusion: worker steered off another task's file",
+      expect.objectContaining({ taskId: "rest", owner: "kerne" }),
+    ]);
+
+    const own = scenario(resolve(ROOT, "test_ark.py"));
+    await runWorkerTasks(own.h.deps, {
+      ...BASE,
+      maxWorkers: 2,
+      tasks,
+      signal: new AbortController().signal,
+      escalation: { target: TARGET, pricing: PRICING },
+    });
+    expect(own.h.calls).toEqual(["cloud"]);
+  });
+
+  it("asks no advisor with too little of the worker's time left to use the hint", async () => {
+    const h = harness(async (_s, options) => {
+      for (let i = 0; i < 6; i += 1) sameStep(options.eventHook, i);
+      await flush();
+      return done();
+    });
+    await runWorkerTasks(h.deps, {
+      ...BASE,
+      tasks: [{ ...TASK[0]!, timeoutMs: 60_000 }],
+      signal: new AbortController().signal,
+      escalation: { target: TARGET, pricing: PRICING },
+    });
+    expect(h.calls).toEqual([]);
+  });
+
+  it("the advisor prompt for a slow pass asks for the design change", () => {
+    const prompt = renderAdvisorPrompt({
+      brief: "write ark/ark.py; the 2574-cell chain under 10 s",
+      trigger: { kind: "slow-pass", detail: "a run passed in 9.8 s" },
+      findings: "4 tool calls",
+    });
+    expect(prompt).toContain("passes but too slow: a run passed in 9.8 s");
+    expect(prompt).toMatch(/smallest change that meets the limit/);
+    const stall = renderAdvisorPrompt({
+      brief: "b",
+      trigger: { kind: "stall", detail: "same result 3×" },
+      findings: "f",
+    });
+    expect(stall).not.toMatch(/the defect is the design/);
   });
 });

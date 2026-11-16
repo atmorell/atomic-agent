@@ -274,7 +274,12 @@ describe("the machine facts in the ### fusion block", () => {
     // k8i: the judge sent io back once (~100 s) over `str(r)` giving
     // '1e-06' where the brief described six decimals in words.
     expect(FUSION_GUIDANCE).toContain(
-      "Give the trickiest part 4-6 input -> expected examples to run first, one full-size with a time limit.",
+      "Give the trickiest part 4-6 input -> expected examples to run first, one full-size with a time limit your design meets",
     );
+  });
+
+  it("asks for a design that meets its own full-size limit (k8o)", () => {
+    // k8o: "recompute all after each set" took 10.47 s on a 10 s limit.
+    expect(FUSION_GUIDANCE).toContain("time limit your design meets: no redo-all per change");
   });
 });

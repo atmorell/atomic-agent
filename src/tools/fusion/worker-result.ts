@@ -424,6 +424,10 @@ export class WorkerRunCollector {
   private readonly written = new Set<string>();
   /** The advisor's evidence (k8h): see {@link WorkerRunCollector.evidence}. */
   private failedRun: string | undefined;
+  /** The last run of any outcome; a pass is evidence too (k8o). */
+  private lastRun:
+    | { text: string; failed: boolean; durationMs?: number }
+    | undefined;
   private failedEdit: string | undefined;
   private readonly ownReads: string[] = [];
 
@@ -599,10 +603,28 @@ export class WorkerRunCollector {
    * traceback, and its hint led to a 94-second rewrite of two files that
    * one edit (`r'|(',')'`) would have fixed. Only what the worker's own
    * tools already returned: nothing is read again.
+   *
+   * k8o: a passing run used to clear the run evidence, so the advisor
+   * never saw "chain Z99: 2574.0 elapsed 10.47s" — the slow pass it was
+   * asked about — and k8n's passing diagnostic runs hid the failing one.
+   * The last run is kept whatever its outcome, and an older failure
+   * stays beside it, labelled as older.
    */
   evidence(): string {
+    const last = this.lastRun;
+    const runs =
+      last === undefined
+        ? []
+        : last.failed
+          ? [`### Last failing run\n${last.text}`]
+          : [
+              `### Last run (passed${last.durationMs === undefined ? "" : `, ${(last.durationMs / 1000).toFixed(1)} s`})\n${last.text}`,
+              ...(this.failedRun === undefined
+                ? []
+                : [`### Earlier failing run\n${this.failedRun}`]),
+            ];
     const parts = [
-      ...(this.failedRun === undefined ? [] : [`### Last failing run\n${this.failedRun}`]),
+      ...runs,
       ...(this.failedEdit === undefined ? [] : [`### Last failed edit\n${this.failedEdit}`]),
       ...this.ownReads.map((read) => `### Read of a file it wrote\n${read}`),
     ];
@@ -617,8 +639,10 @@ export class WorkerRunCollector {
     if (result.tool === "os.shell.run") {
       const exit = details.exitCode;
       const failed = result.status === "error" || (typeof exit === "number" && exit !== 0);
-      // A run that passed after it makes the old failure stale.
-      this.failedRun = failed ? evidenceTail(result.summary) : undefined;
+      const text = evidenceTail(result.summary);
+      const durationMs = typeof details.durationMs === "number" ? details.durationMs : undefined;
+      this.lastRun = { text, failed, ...(durationMs === undefined ? {} : { durationMs }) };
+      if (failed) this.failedRun = text;
       return;
     }
     if (FILE_WRITING_TOOLS.has(result.tool) && result.status === "error") {
@@ -630,6 +654,11 @@ export class WorkerRunCollector {
     if (path === undefined || !this.wrote(path)) return;
     this.ownReads.push(cut(result.summary, EVIDENCE_READ_CHARS));
     if (this.ownReads.length > EVIDENCE_READS_KEPT) this.ownReads.shift();
+  }
+
+  /** The last run's output when that run failed (k8o's foreign-file check). */
+  lastFailingRun(): string | undefined {
+    return this.lastRun?.failed === true ? this.lastRun.text : undefined;
   }
 
   /** Path spellings differ between tools on Windows (case, separators). */
@@ -1023,14 +1052,31 @@ const FINDINGS_KEPT = 6;
 const FINDING_CHARS = 160;
 
 /** The advisor's evidence: about 2K tokens at most, read once per stall. */
-export const EVIDENCE_CHARS = 8_000;
+export const EVIDENCE_CHARS = 14_000;
 const EVIDENCE_RUN_LINES = 40;
 const EVIDENCE_RUN_CHARS = 3_000;
-const EVIDENCE_READ_CHARS = 3_000;
+// k8o: at 3 000 both reads ended before `parse()`, and the advisor said
+// it could not see the defect.
+const EVIDENCE_READ_CHARS = 5_000;
 const EVIDENCE_READS_KEPT = 2;
 const EVIDENCE_EDIT_CHARS = 400;
 
 /** A failing run's `key:` line, if the compressor led with one, and its last lines. */
+/**
+ * The files a failing run's frames name, outermost first (k8o): Python's
+ * `File "x", line N` and pytest's `x.py:N:` lines, in output order.
+ */
+export function failingFrameFiles(run: string): string[] {
+  const frames: Array<{ at: number; file: string }> = [];
+  for (const m of run.matchAll(/File "([^"]+)", line \d+/g)) {
+    frames.push({ at: m.index ?? 0, file: m[1]! });
+  }
+  for (const m of run.matchAll(/^((?:[A-Za-z]:)?[^\s:"]+\.py):\d+:/gm)) {
+    frames.push({ at: m.index ?? 0, file: m[1]! });
+  }
+  return frames.sort((a, b) => a.at - b.at).map((f) => f.file);
+}
+
 function evidenceTail(summary: string): string {
   const lines = summary.split("\n");
   const key = lines[0]?.startsWith("key: ") ? lines[0] : undefined;

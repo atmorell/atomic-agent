@@ -27,12 +27,14 @@ export const ADVISOR_HINT_LOG_CHARS = 4_000;
 
 export type EscalationTrigger =
   | { kind: "stall"; detail: string }
+  | { kind: "slow-pass"; detail: string }
   | { kind: "first-answer-cut"; detail: string }
   | { kind: "manual" };
 
 export function describeTrigger(trigger: EscalationTrigger): string {
   if (trigger.kind === "manual") return "the person asked for it";
   if (trigger.kind === "stall") return `stalled: ${trigger.detail}`;
+  if (trigger.kind === "slow-pass") return `passes but too slow: ${trigger.detail}`;
   return `first answer cut: ${trigger.detail}`;
 }
 
@@ -78,6 +80,13 @@ export function renderAdvisorPrompt(input: {
   return [
     "You are advising a smaller model that is working on one task and appears to be stuck.",
     "Read its brief, what it has done and the evidence below. If the evidence shows the defect, name it as file:line and give the exact old and new lines for one os.fs.edit. Never tell it to rewrite or re-create a file. If you cannot see the defect, name the one command that would show it, such as a short script on stdin that imports the module and calls it. Then say what to stop doing. Under 300 words, no preamble.",
+    // k8o: the worker's runs passed but slowly, and it hunted for a
+    // defect it did not have; the fix was a different design.
+    ...(input.trigger.kind === "slow-pass"
+      ? [
+          "Its runs pass but too slowly for the brief's limit: the defect is the design. Name the code that redoes work per item as file:line and the smallest change that meets the limit (such as recomputing only what a change affects), as os.fs.edit lines where they fit.",
+        ]
+      : []),
     "",
     "## Brief",
     brief,
@@ -101,6 +110,15 @@ export function renderAdvisorPrompt(input: {
  */
 export function formatPersonSteer(text: string): string {
   return `Note from the person running this session, sent to you while you work. It outranks your brief where the two disagree:\n\n${text.trim()}`;
+}
+
+/**
+ * k8o (16-11-2026): the tests worker's run failed inside `ark/ark.py`,
+ * which the core worker was still writing; the advisor it asked sent it
+ * to edit that file. A failure in another task's file is that task's.
+ */
+export function formatForeignFailureSteer(path: string, owner: string): string {
+  return `Your last failing run fails inside ${path}, which task "${owner}" writes and may still be writing. Do not edit it or work around it: finish your own files, check them against the contract's names, and reply; the orchestrator checks the parts together.`;
 }
 
 /** The steer the worker reads at its next step. */

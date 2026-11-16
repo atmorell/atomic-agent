@@ -15,6 +15,7 @@ import {
   describeTrigger,
   formatAdvisorSteer,
   formatCost,
+  formatForeignFailureSteer,
   formatPersonSteer,
   renderAdvisorPrompt,
   requestAdvice,
@@ -42,6 +43,7 @@ import {
   WorkerRunCollector,
   WORKER_QUEUED_NOTE,
   type WorkerCommandRun,
+  failingFrameFiles,
   formatWaitMs,
   queuedWorkerHint,
   unservedWorkerHint,
@@ -541,6 +543,19 @@ export interface WorkerRunnerDeps {
 
 /** Escalations one worker may get, automatic and manual together. */
 export const MAX_ESCALATIONS_PER_WORKER = 2;
+
+/**
+ * A passing run at least this long counts as slow (k8o: the full-size
+ * example at 10.47 s against a 10 s limit; the facit runs in ~3 s).
+ */
+export const SLOW_PASS_MS = 8_000;
+
+/**
+ * An automatic advisor call with less than this left of the worker's
+ * own time cannot pay off: the hint needs steps to act on (k8o's core
+ * worker was advised 53 s before the run's end).
+ */
+export const ADVISOR_MIN_REMAINING_MS = 90_000;
 
 export interface RunWorkerTasksOptions {
   parentSessionId: string;
@@ -1458,8 +1473,74 @@ async function runOneTask(
    * (after a hint did not help) re-runs the task on the stronger model
    * when the operator turned that on and the model is priced.
    */
+  // k8o (16-11-2026): the tests worker's run failed inside the core
+  // worker's `ark/ark.py`, still being written; its stall asked the
+  // advisor, whose hint sent it to edit that file. A stall whose failing
+  // run ends in a file another task of this fan-out declares is steered
+  // back to the worker's own files, once, and asks no advisor.
+  const siblingFiles = new Map<string, string>();
+  for (const other of options.tasks) {
+    if (other.id === task.id) continue;
+    for (const file of other.files ?? []) {
+      try {
+        siblingFiles.set(pathKey(resolveUserPath(file, pathBase ?? workingDir)), other.id);
+      } catch {
+        // An unresolvable path guards nothing.
+      }
+    }
+  }
+  const resolvedKey = (path: string): string | undefined => {
+    try {
+      return pathKey(resolveUserPath(path, workingDir));
+    } catch {
+      return undefined;
+    }
+  };
+  const foreignFailure = (): { path: string; owner: string } | undefined => {
+    if (siblingFiles.size === 0) return undefined;
+    const run = collector.lastFailingRun();
+    if (run === undefined) return undefined;
+    const root = pathKey(workingDir).replace(/\/?$/, "/");
+    const own = new Set(
+      [...collector.writtenPaths(), ...(task.files ?? [])]
+        .map(resolvedKey)
+        .filter((key): key is string => key !== undefined),
+    );
+    // The innermost frame inside the working directory decides; the
+    // standard library and site-packages do not.
+    for (const frame of failingFrameFiles(run).reverse()) {
+      const key = resolvedKey(frame);
+      if (key === undefined || !key.startsWith(root)) continue;
+      if (own.has(key)) return undefined;
+      const owner = siblingFiles.get(key);
+      return owner === undefined ? undefined : { path: frame, owner };
+    }
+    return undefined;
+  };
+  let foreignSteered = false;
   const autoEscalate = (trigger: EscalationTrigger): void => {
     if (target === undefined || !target.auto || replaceRequested) return;
+    if (servedAt !== null && timeoutMs - (Date.now() - servedAt) < ADVISOR_MIN_REMAINING_MS) {
+      return;
+    }
+    if (trigger.kind === "stall") {
+      const foreign = foreignFailure();
+      if (foreign !== undefined) {
+        if (!foreignSteered && deps.steerWorker !== undefined) {
+          foreignSteered = deps.steerWorker(
+            session.id,
+            formatForeignFailureSteer(foreign.path, foreign.owner),
+          );
+          deps.logger?.info("fusion: worker steered off another task's file", {
+            taskId: task.id,
+            path: foreign.path,
+            owner: foreign.owner,
+            steered: foreignSteered,
+          });
+        }
+        return;
+      }
+    }
     if (escalations === 0) {
       // The stall that triggered it is spent: the hint gets fresh steps
       // before the stall half of the hand-back may fire.
@@ -1476,6 +1557,36 @@ async function runOneTask(
       replaceRequested = true;
       replaceAbort.abort(new Error("replaced by the escalation model"));
     }
+  };
+  // k8o (16-11-2026): the full-size example passed in 10.47 s against a
+  // 10 s limit, and the worker spent ~250 s alone trying to speed up the
+  // design its brief prescribed. A second slow pass after it changed a
+  // file asks the advisor for a design, not a defect hunt.
+  let slowPassMs: number | undefined;
+  let wroteSinceSlowPass = false;
+  const checkSlowPass = (
+    tool: string,
+    status: string,
+    details: Record<string, unknown> | undefined,
+  ): void => {
+    if (status !== "ok") return;
+    if (WRITE_TOOLS.has(tool)) {
+      if (slowPassMs !== undefined) wroteSinceSlowPass = true;
+      return;
+    }
+    if (tool !== "os.shell.run") return;
+    const exit = details?.exitCode;
+    const ms = details?.durationMs;
+    if (typeof exit === "number" && exit !== 0) return;
+    if (typeof ms !== "number" || ms < SLOW_PASS_MS) return;
+    if (slowPassMs !== undefined && wroteSinceSlowPass) {
+      autoEscalate({
+        kind: "slow-pass",
+        detail: `a run passed in ${(ms / 1000).toFixed(1)} s after the worker changed its files to speed up a ${(slowPassMs / 1000).toFixed(1)} s pass`,
+      });
+    }
+    slowPassMs = ms;
+    wroteSinceSlowPass = false;
   };
   // The person's notes to this worker (ATO-568). They ride the same
   // steering inbox the session's own steers do, keyed by the worker's
@@ -1678,6 +1789,15 @@ async function runOneTask(
         }
         markNoteRead(session.id, event);
         collector.observe(event);
+        // After the collector, so the advisor's evidence holds this run.
+        if (event.type === "llm_event" && event.event.type === "tool_call_executed") {
+          const result = event.event.result;
+          try {
+            checkSlowPass(result.tool, result.status, result.details);
+          } catch {
+            // A check never takes the worker down.
+          }
+        }
         // After the collector: it is what knows the step's written paths.
         // Once per writing step, so a batch of files is one comparison.
         if (event.type === "step_finished" && wroteThisStep) {
