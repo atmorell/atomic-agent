@@ -274,8 +274,21 @@ describe("the machine facts in the ### fusion block", () => {
     // k8i: the judge sent io back once (~100 s) over `str(r)` giving
     // '1e-06' where the brief described six decimals in words.
     expect(FUSION_GUIDANCE).toContain(
-      "Give the trickiest part 4-6 input -> expected examples to run first, one full-size with a time limit your design meets",
+      "Give the trickiest part 4-6 input -> expected examples to run first,",
     );
+    expect(FUSION_GUIDANCE).toContain(
+      "one full-size with a time limit your design meets",
+    );
+  });
+
+  it("asks for an example where one allowed form starts like another (k8ap)", () => {
+    // k8al, k8an, k8ap: "a range or an expression" was met for `A1:A3`
+    // and `2*-3`, while `B1*2` (an expression that starts like a range)
+    // raised ValueError in facit. No brief had such an example.
+    expect(FUSION_GUIDANCE).toContain(
+      "one where the request's 'X or Y' gets a Y starting like an X",
+    );
+    expect(FUSION_GUIDANCE).not.toMatch(/cannot ask/);
   });
 
   it("asks for a design that meets its own full-size limit (k8o)", () => {
