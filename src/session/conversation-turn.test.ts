@@ -189,6 +189,63 @@ describe("conversation-turn helpers", () => {
     expect(render()).toContain("the line after the last one shown as `offset`");
   });
 
+  it("shows a fresh 12K os.fs.read whole and cuts the same read in history", () => {
+    // A 9-12 KB core module: whole for the step that has to act on it,
+    // the generic 8000-char cap once the macro-turn has moved past it.
+    const TOTAL_LINES = 300;
+    const fileLines = Array.from(
+      { length: TOTAL_LINES },
+      (_, i) => `const line${String(i + 1).padStart(3, "0")} = "${"y".repeat(20)}";`,
+    );
+    const summary = fileLines.join("\n");
+    expect(summary.length).toBeGreaterThan(11_000);
+    expect(summary.length).toBeLessThan(16_000 - 300);
+    const prefix = "tool_result[os.fs.read ok]: ";
+    const turn = toolResultTurn({
+      tool: "os.fs.read",
+      status: "ok",
+      summary,
+      at: 5,
+    });
+
+    const fresh = renderTurnForPrompt(turn, {
+      inCurrentMacroTurn: true,
+      readStartLine: 1,
+    });
+    expect(fresh).toBe(prefix + summary);
+    expect(fresh).not.toContain("more lines are not shown");
+
+    const aged = renderTurnForPrompt(turn, {
+      inCurrentMacroTurn: false,
+      readStartLine: 1,
+    });
+    expect(aged.length).toBeLessThanOrEqual(prefix.length + 8000);
+    expect(aged).toContain("more lines are not shown");
+  });
+
+  it("cuts a fresh os.fs.read past 16K on a line boundary and names the next offset", () => {
+    const TOTAL_LINES = 800;
+    const fileLines = Array.from(
+      { length: TOTAL_LINES },
+      (_, i) => `const line${i + 1} = "${"z".repeat(24)}";`,
+    );
+    const summary = fileLines.join("\n");
+    expect(summary.length).toBeGreaterThan(2 * 16_000);
+    const prefix = "tool_result[os.fs.read ok]: ";
+    const fresh = renderTurnForPrompt(
+      toolResultTurn({ tool: "os.fs.read", status: "ok", summary, at: 5 }),
+      { inCurrentMacroTurn: true, readStartLine: 1 },
+    );
+    const body = fresh.slice(prefix.length).split("\n");
+    const hint = body.pop()!;
+    const shown = body.length;
+    expect(fresh.length).toBeLessThanOrEqual(prefix.length + 16_000);
+    expect(fresh.length).toBeGreaterThan(prefix.length + 8000);
+    expect(body).toEqual(fileLines.slice(0, shown));
+    expect(hint).toContain(`${TOTAL_LINES - shown} more lines are not shown`);
+    expect(hint).toContain(`offset: ${shown + 1} and limit: ${shown}`);
+  });
+
   it("falls back to a character cut for an os.fs.read with no usable line break", () => {
     const rendered = renderTurnForPrompt(
       toolResultTurn({

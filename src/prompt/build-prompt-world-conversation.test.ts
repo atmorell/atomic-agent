@@ -10,9 +10,11 @@ import {
   renderPackedConversation,
 } from "./build-prompt-world-conversation.js";
 
+// ~21K chars: past the render cap of a fresh os.fs.read (16 000) as well as
+// an aged one (8000), so every read here is cut and carries a paging hint.
 const bigFile = Array.from(
   { length: 300 },
-  (_, i) => `line ${i + 1} ${"y".repeat(30)}`,
+  (_, i) => `line ${i + 1} ${"y".repeat(60)}`,
 ).join("\n");
 
 function readCall(args: Record<string, unknown>, at: number) {

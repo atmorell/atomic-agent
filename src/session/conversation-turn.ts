@@ -255,6 +255,16 @@ export function assistantReplyTurn(
  */
 const TOOL_RESULT_RENDER_CAP_CHARS = 8000;
 const GOG_TOOL_RESULT_RENDER_CAP_CHARS = 16_000;
+/**
+ * A fresh `os.fs.read` — the inference that has to act on the file — gets
+ * twice the generic cap. At 8000 a 9-10 KB source file (a core module of a
+ * fusion task) showed ~195 lines, and the worker spent its next steps
+ * paging the rest in with `offset: 195` reads, one step per page, before it
+ * could fix anything. History keeps the generic cap, so a read the
+ * macro-turn has moved past costs no more than before; ingestion is bounded
+ * separately (`agent.batchToolResultCharCap`).
+ */
+const READ_FRESH_RENDER_CAP_CHARS = 16_000;
 
 /**
  * Tools whose `tool_result.summary` is rendered **uncapped** into
@@ -414,7 +424,9 @@ export function renderToolResultBody(
   if (turn.tool === "os.fs.read") {
     return capReadSummary(
       turn.summary,
-      TOOL_RESULT_RENDER_CAP_CHARS,
+      options.inCurrentMacroTurn === true
+        ? READ_FRESH_RENDER_CAP_CHARS
+        : TOOL_RESULT_RENDER_CAP_CHARS,
       options.readStartLine,
     );
   }
