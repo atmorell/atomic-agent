@@ -1535,6 +1535,8 @@ export function buildFusionDelegateTool(
               red: redItems(verdict)
                 .slice(0, 8)
                 .map((v) => `${v.id} ${v.why}`.slice(0, 300)),
+              // Red items that came with the judge's own edits (k8w on).
+              fixes: redItems(verdict).filter((v) => (v.fix?.length ?? 0) > 0).length,
             });
           }
         };

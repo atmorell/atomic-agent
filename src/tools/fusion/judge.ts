@@ -105,8 +105,15 @@ export const JUDGE_EVIDENCE_CHARS = 24_000;
  * one fan-out often share files, which are then shown once.
  */
 export const JUDGE_EVIDENCE_EXTRA_CHARS = 12_000;
-/** Room for the red items' one-line reasons; times the tasks asked, up to 3. */
-export const JUDGE_MAX_OUTPUT_TOKENS = 1_200;
+/**
+ * Room for the red items' one-line reasons and their edits (`JudgeFix`);
+ * times the tasks asked, up to 3.
+ */
+export const JUDGE_MAX_OUTPUT_TOKENS = 2_000;
+/** At most this many edits ride with one red item. */
+export const JUDGE_MAX_FIXES_PER_ITEM = 3;
+/** An edit's `old` or `new` longer than this is dropped, not cut. */
+export const JUDGE_FIX_MAX_CHARS = 2_000;
 /** How much of the worker's last command's stdout the judge reads. */
 export const JUDGE_RUN_CHARS = 1_500;
 /** How much of each earlier command's stdout the judge reads. */
@@ -267,10 +274,26 @@ export function renderAcceptanceBlock(items: readonly AcceptanceItem[]): string 
   ].join("\n");
 }
 
+/**
+ * An edit the judge saw in a file shown whole: `old` copied from the
+ * evidence, `new` its replacement. The retry brief hands it to the worker
+ * as an `os.fs.edit` call to emit as given, so a 1-5 line repair is one
+ * step instead of a cold session's 6-15 (k8s-k8u, 16-11-2026: retry waves
+ * of 95-165 s). The worker applies it through its own dispatch: approval,
+ * ownership and read scope stay enforced.
+ */
+export interface JudgeFix {
+  path: string;
+  old: string;
+  new: string;
+}
+
 export interface ItemVerdict {
   id: string;
   pass: boolean;
   why: string;
+  /** The judge's edits for a red item, when it could see them; never on a pass. */
+  fix?: JudgeFix[];
   /**
    * Who decided: a fact (check, presence, file), the judge, or nobody —
    * `skipped` when a fact was already red and the judge was not asked
@@ -651,7 +674,10 @@ export const JUDGE_RULES = [
   // a red task and a new delegation for one defect (16-11-2026). Each
   // defect once: k3c's answers repeated one defect under every item it
   // touched, and output is the dearest token there is.
-  `Answer with JSON only: {"red":[{"id":"<item id>","why":"one line: every defect in this item, joined by '; '"}],"pass":["<item id>"]} — every item to rule on in exactly one of the two lists; a reason only for a red item. Name all of a red item's defects now: the worker gets one retry, and a defect left out is found only after it. Name each defect once, under the first item it fails, in at most about 20 words; another item that fails for the same defect says only "same as <id>".`,
+  `Answer with JSON only: {"red":[{"id":"<item id>","why":"one line: every defect in this item, joined by '; '","fix":[{"path":"<file>","old":"<exact lines>","new":"<their replacement>"}]}],"pass":["<item id>"]} — every item to rule on in exactly one of the two lists; a reason only for a red item. Name all of a red item's defects now: the worker gets one retry, and a defect left out is found only after it. Name each defect once, under the first item it fails, in at most about 20 words; another item that fails for the same defect says only "same as <id>".`,
+  // k8s-k8u (16-11-2026): every retry was a cold worker session of 6-15
+  // steps (95-165 s) for a 1-5 line repair the judge had already located.
+  `"fix" is optional and goes only with a red item: when the repair is small and you can see it in a file shown whole, give it as at most ${JUDGE_MAX_FIXES_PER_ITEM} edits in that task's own files — "path" as the file's evidence heading names it, "old" copied character for character from the evidence (whole lines, unique in the file, at most 12 lines), "new" its replacement. The worker applies them as given. Leave "fix" out when the file is shown as a diff or clipped, when the repair is larger, or when you are not sure of it; never repeat an edit under a second item.`,
 ].join("\n");
 
 function itemKey(qualified: boolean): (taskId: string, itemId: string) => string {
@@ -832,7 +858,8 @@ export function renderJudgeFollowUp(input: {
     ...(input.verify === undefined
       ? []
       : [input.verify.replace(VERIFY_HEADING, "### Run by the runtime after the retry finished ("), ""]),
-    "Answer now with the JSON only, in the form given above, for the items to rule on again; use their ids exactly as listed.",
+    // No retry follows this round, so an edit would be output paid for nothing.
+    'Answer now with the JSON only, in the form given above but without "fix" (no retry follows), for the items to rule on again; use their ids exactly as listed.',
   ].join("\n");
 }
 
@@ -867,11 +894,13 @@ export function renderJudgePrompt(input: {
  * Per-item verdicts from the judge's answer; `null` when it cannot be read
  * at all. Reads the compact form `{"red":[{id,why}],"pass":[id]}` and the
  * older `{"items":[{id,pass,why}]}`. An id named both red and passed is
- * red, and in the older form only a literal `pass: true` passes.
+ * red, and in the older form only a literal `pass: true` passes. A red
+ * item keeps its well-formed edits (`readJudgeFixes`); a malformed one is
+ * dropped, never repaired.
  */
 export function parseJudgeAnswer(
   content: string,
-): Map<string, { pass: boolean; why: string }> | null {
+): Map<string, { pass: boolean; why: string; fix?: JudgeFix[] }> | null {
   const start = content.indexOf("{");
   const end = content.lastIndexOf("}");
   if (start === -1 || end <= start) return null;
@@ -894,7 +923,7 @@ export function parseJudgeAnswer(
     }
     return undefined;
   };
-  const out = new Map<string, { pass: boolean; why: string }>();
+  const out = new Map<string, { pass: boolean; why: string; fix?: JudgeFix[] }>();
   for (const entry of Array.isArray(items) ? items : []) {
     if (entry === null || typeof entry !== "object") continue;
     const { id, pass: ok, why } = entry as Record<string, unknown>;
@@ -908,12 +937,35 @@ export function parseJudgeAnswer(
   for (const entry of Array.isArray(red) ? red : []) {
     const id = idOf(entry);
     if (id === undefined) continue;
-    const why = entry !== null && typeof entry === "object"
-      ? (entry as Record<string, unknown>).why
-      : undefined;
-    out.set(id, { pass: false, why: reason(why) });
+    const fields = entry !== null && typeof entry === "object"
+      ? (entry as Record<string, unknown>)
+      : {};
+    const fix = readJudgeFixes(fields.fix);
+    out.set(id, { pass: false, why: reason(fields.why), ...(fix.length === 0 ? {} : { fix }) });
   }
   return out;
+}
+
+/**
+ * A red item's edits as the judge gave them: each needs a non-empty
+ * `path` and `old`, a string `new` that differs from `old`, and both
+ * within `JUDGE_FIX_MAX_CHARS`; at most `JUDGE_MAX_FIXES_PER_ITEM` are
+ * kept. Anything else is left out, so the worker never applies a guess.
+ */
+function readJudgeFixes(raw: unknown): JudgeFix[] {
+  if (!Array.isArray(raw)) return [];
+  const fixes: JudgeFix[] = [];
+  for (const entry of raw) {
+    if (fixes.length === JUDGE_MAX_FIXES_PER_ITEM) break;
+    if (entry === null || typeof entry !== "object") continue;
+    const { path, old, new: next } = entry as Record<string, unknown>;
+    if (typeof path !== "string" || path.trim().length === 0) continue;
+    if (typeof old !== "string" || old.length === 0 || typeof next !== "string") continue;
+    if (old === next) continue;
+    if (old.length > JUDGE_FIX_MAX_CHARS || next.length > JUDGE_FIX_MAX_CHARS) continue;
+    fixes.push({ path: path.trim(), old, new: next });
+  }
+  return fixes;
 }
 
 export interface JudgeTarget {
@@ -1162,11 +1214,16 @@ export function renderRetryFindings(
   verify?: JudgeVerifyRun,
 ): string {
   const failed = verify !== undefined && !verify.ok && verify.excerpt.length > 0;
+  const red = redItems(verdict);
+  const check = verify?.command === undefined ? "the task's check" : `\`${verify.command.slice(0, 200)}\``;
+  // k8s-k8u: each retry was a cold session of 6-15 steps (95-165 s) for a
+  // repair the judge could already see; its edits go in as ready calls.
+  const allFixed = red.length > 0 && red.every((v) => (v.fix?.length ?? 0) > 0);
   return [
     "## A judge found these acceptance items NOT met in your previous attempt",
-    ...redItems(verdict).map((v) => {
+    ...red.flatMap((v) => {
       const item = items.find((i) => i.id === v.id);
-      return `- [${v.id}] ${item?.text ?? ""} — ${v.why}`;
+      return [`- [${v.id}] ${item?.text ?? ""} — ${v.why}`, ...(v.fix ?? []).map(renderFixCall)];
     }),
     ...(failed
       ? [
@@ -1180,8 +1237,21 @@ export function renderRetryFindings(
     // out; the retry re-read the original brief's "run a self-test" as
     // live and wrote an extra `_selftest.py` (16-11-2026). k8p: the retry
     // read `formel.py` six times (77 s) before it ran the named case once.
-    `This is a repair, not a second attempt. The files from the previous attempt are on disk: edit only the lines these findings name, in files you own, and write no new file unless a finding asks for one. The task's other instructions are already done — do not repeat them or their self-tests. Start with one \`os.shell.run\` with a short script on \`stdin\` that calls the case a finding names and shows it failing; then read only the lines its error names. After the fix, run ${verify?.command === undefined ? "the task's check" : `\`${verify.command.slice(0, 200)}\``} at most once, then reply.`,
+    allFixed
+      ? `This is a repair, not a second attempt. The judge wrote the edits above from your files as they are on disk. Emit ONE array: each \`os.fs.edit\` call above exactly as given, then one \`os.shell.run\` of ${check}. If an edit's \`oldString\` is not found, or the run still fails, read only the lines its error names and fix the named defect yourself. Write no new file, and do not repeat the task's other instructions or self-tests. Then reply.`
+      : `This is a repair, not a second attempt. The files from the previous attempt are on disk: edit only the lines these findings name, in files you own, and write no new file unless a finding asks for one. The task's other instructions are already done — do not repeat them or their self-tests. Start with one \`os.shell.run\` with a short script on \`stdin\` that calls the case a finding names and shows it failing; then read only the lines its error names. After the fix, run ${check} at most once, then reply.`,
   ].join("\n");
+}
+
+/** One judge edit as the call the worker emits, fenced past any backtick run in it. */
+function renderFixCall(fix: JudgeFix): string {
+  const call = JSON.stringify({
+    tool: "os.fs.edit",
+    args: { path: fix.path, oldString: fix.old, newString: fix.new },
+  });
+  const longest = Math.max(0, ...(call.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return `${fence}json\n${call}\n${fence}`;
 }
 
 export interface JudgeSummary {
@@ -1205,7 +1275,8 @@ export function judgeSummary(verdict: JudgeVerdict, retried: boolean): JudgeSumm
     ...(verdict.unverified === undefined ? {} : { unverified: verdict.unverified }),
     ...(verdict.clipped === true ? { clipped: true as const } : {}),
     costUsd: verdict.costUsd,
-    items: verdict.items,
+    // The edits went to the worker; the orchestrator's row stays small.
+    items: verdict.items.map(({ fix: _fix, ...item }) => item),
   };
 }
 

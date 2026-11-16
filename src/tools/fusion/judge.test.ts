@@ -14,6 +14,8 @@ import {
   buildAcceptanceChecklist,
   gatherEvidence,
   JUDGE_EVIDENCE_CHARS,
+  JUDGE_FIX_MAX_CHARS,
+  JUDGE_MAX_FIXES_PER_ITEM,
   JUDGE_MAX_OUTPUT_TOKENS,
   JUDGE_REQUEST_CHARS,
   JUDGE_EARLIER_RUN_CHARS,
@@ -22,6 +24,7 @@ import {
   JUDGE_SEVERITY_RULE,
   JUDGE_WHOLE_FILE_CHARS,
   gatherJudgeEvidence,
+  judgeSummary,
   judgeTask,
   judgeTasks,
   parseJudgeAnswer,
@@ -214,6 +217,63 @@ describe("a red item needs a defect, and a retry is a repair (k8c, 16-11-2026)",
       "This is a repair, not a second attempt. The files from the previous attempt are on disk: edit only the lines these findings name, in files you own, and write no new file unless a finding asks for one. The task's other instructions are already done — do not repeat them or their self-tests. Start with one `os.shell.run` with a short script on `stdin` that calls the case a finding names and shows it failing; then read only the lines its error names. After the fix, run `python -m pytest -q` at most once, then reply.",
     ]);
     expect(renderRetryFindings(items, verdict)).toContain("After the fix, run the task's check at most once, then reply.");
+  });
+});
+
+describe("the judge hands over its edits for the retry (k8s-k8u, 16-11-2026)", () => {
+  const items: AcceptanceItem[] = [
+    { id: "a1", kind: "instructions", text: "SUM ranges", judged: true },
+    { id: "a2", kind: "instructions", text: "vis handles bad cells", judged: true },
+  ];
+  const fix = { path: "formel.py", old: "    return a\n", new: "    return a + b\n" };
+
+  it("asks for edits copied from a file shown whole, at most three, and none in a follow-up", () => {
+    expect(JUDGE_RULES).toContain('"fix":[{"path":"<file>","old":"<exact lines>","new":"<their replacement>"}]');
+    expect(JUDGE_RULES).toContain("character for character");
+    expect(JUDGE_RULES).toContain(`at most ${JUDGE_MAX_FIXES_PER_ITEM} edits`);
+    expect(JUDGE_RULES).toContain('Leave "fix" out when the file is shown as a diff or clipped');
+  });
+
+  it("renders each edit as the exact call and asks for one array when every red item has one", () => {
+    const verdict: JudgeVerdict = {
+      green: false,
+      items: [
+        { id: "a1", pass: false, by: "judge", why: "SUM drops b", fix: [fix] },
+        { id: "a2", pass: true, by: "judge", why: "met" },
+      ],
+      costUsd: null,
+    };
+    const brief = renderRetryFindings(items, verdict, { ok: false, exitCode: 1, command: "python -m pytest -q", excerpt: ["E assert 1 == 3"] });
+    const call = JSON.stringify({ tool: "os.fs.edit", args: { path: "formel.py", oldString: fix.old, newString: fix.new } });
+    expect(brief).toContain("- [a1] SUM ranges — SUM drops b\n```json\n" + call + "\n```");
+    expect(brief).toContain("Emit ONE array: each `os.fs.edit` call above exactly as given, then one `os.shell.run` of `python -m pytest -q`.");
+    expect(brief).toContain("E assert 1 == 3");
+    expect(brief).not.toContain("shows it failing");
+    expect(judgeSummary(verdict, false).items[0]).toEqual({ id: "a1", pass: false, by: "judge", why: "SUM drops b" });
+  });
+
+  it("fences an edit past the backticks in it", () => {
+    const verdict: JudgeVerdict = {
+      green: false,
+      items: [{ id: "a1", pass: false, by: "judge", why: "doc", fix: [{ path: "a.md", old: "x", new: "````y" }] }],
+      costUsd: null,
+    };
+    expect(renderRetryFindings(items, verdict)).toContain("\n`````json\n");
+  });
+
+  it("keeps the reproduce-first brief when a red item has no edit", () => {
+    const verdict: JudgeVerdict = {
+      green: false,
+      items: [
+        { id: "a1", pass: false, by: "judge", why: "SUM drops b", fix: [fix] },
+        { id: "a2", pass: false, by: "judge", why: "vis crashes" },
+      ],
+      costUsd: null,
+    };
+    const brief = renderRetryFindings(items, verdict);
+    expect(brief).toContain("```json\n");
+    expect(brief).toContain("shows it failing");
+    expect(brief).not.toContain("Emit ONE array");
   });
 });
 
@@ -642,6 +702,43 @@ describe("a node closes only on a green list (ATO-944)", () => {
       expect.objectContaining({ taskId: "t", round: "first", green: false, red: ["a2 no score in a.txt"] }),
       expect.objectContaining({ taskId: "t", round: "retry", green: false, red: ["a2 no score in a.txt"] }),
     ]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("hands the judge's edit to the retry as a ready call, counts it in the log, and keeps it off the row (k8s-k8u)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "judge-fix-"));
+    const records: LogRecord[] = [];
+    let judged = 0;
+    const d = deps(
+      dir,
+      async () => {
+        judged += 1;
+        return {
+          content: JSON.stringify(
+            judged === 1
+              ? { red: [{ id: "a2", why: "no score", fix: [{ path: "a.txt", old: "attempt 1", new: "score 3" }] }], pass: [] }
+              : { red: [], pass: ["a2"] },
+          ),
+        };
+      },
+      { logger: new StructuredLogger({ level: "info", sinks: [(r) => records.push(r)] }) },
+    );
+    const result = await buildFusionDelegateTool(d).run(
+      { tasks: TASK },
+      { workingDir: dir, sessionId: "s-p", stepIndex: 0, signal: new AbortController().signal },
+    );
+    expect(d.briefs).toHaveLength(2);
+    expect(d.briefs[1]).toContain(
+      JSON.stringify({ tool: "os.fs.edit", args: { path: "a.txt", oldString: "attempt 1", newString: "score 3" } }),
+    );
+    expect(d.briefs[1]).toContain("Emit ONE array");
+    const verdicts = records.filter((r) => r.message === "fusion: judge verdict").map((r) => r.context);
+    expect(verdicts).toEqual([
+      expect.objectContaining({ round: "first", fixes: 1 }),
+      expect.objectContaining({ round: "retry", green: true, fixes: 0 }),
+    ]);
+    const row = (result.details.tasks as Array<{ judge?: { items: object[] } }>)[0]!;
+    expect(JSON.stringify(row.judge)).not.toContain("attempt 1");
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -1302,6 +1399,41 @@ describe("one judge call for several tasks", () => {
     expect(parseJudgeAnswer('{"items":[{"id":"a1","pass":true,"why":"ok"}]}')!.get("a1")!.pass).toBe(true);
     expect(parseJudgeAnswer('{"verdict":"green"}')).toBeNull();
     expect(parseJudgeAnswer("null")).toBeNull();
+  });
+
+  it("keeps a red item's well-formed edits and drops the rest", () => {
+    const ok = { path: " a.py ", old: "x = 1\n", new: "x = 2\n" };
+    const answer = JSON.stringify({
+      red: [
+        {
+          id: "a1",
+          why: "wrong",
+          fix: [
+            ok,
+            { path: "a.py", old: "", new: "y" },
+            { path: "a.py", old: "same", new: "same" },
+            { path: 7, old: "x", new: "y" },
+            { path: "a.py", old: "z".repeat(JUDGE_FIX_MAX_CHARS + 1), new: "y" },
+            "not an edit",
+            { path: "b.py", old: "p", new: "q" },
+            { path: "c.py", old: "r", new: "s" },
+            { path: "d.py", old: "t", new: "u" },
+          ],
+        },
+        { id: "a2", why: "bad", fix: "nope" },
+      ],
+    });
+    const parsed = parseJudgeAnswer(answer)!;
+    expect(parsed.get("a1")).toEqual({
+      pass: false,
+      why: "wrong",
+      fix: [
+        { path: "a.py", old: "x = 1\n", new: "x = 2\n" },
+        { path: "b.py", old: "p", new: "q" },
+        { path: "c.py", old: "r", new: "s" },
+      ],
+    });
+    expect(parsed.get("a2")).toEqual({ pass: false, why: "bad" });
   });
 });
 
