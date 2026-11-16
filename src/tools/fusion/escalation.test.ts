@@ -474,6 +474,32 @@ describe("the advisor sees the worker's evidence and is asked for one edit (k8h)
     expect(prompt).toContain("(none recorded");
   });
 
+  it("the advisor prompt shows the task's checks that still fail, before the worker's own runs (k8an)", () => {
+    // k8an: the advisor saw only the worker's passing runs and answered
+    // "No defect is visible" while the check failed on the worker's test.
+    const checks = "1 of 3 failed on the runtime's last run of them:\n- `pytest -q tests`: AssertionError: assert 'Z' == 'a'";
+    const prompt = renderAdvisorPrompt({
+      brief: "write ark/formel.py",
+      trigger: { kind: "stall", detail: "same result 3×" },
+      findings: "4 tool calls",
+      evidence: "$ python -c 'import ark'\nok",
+      checks,
+    });
+    const heading = "## The task's checks, run by the runtime: still failing";
+    expect(prompt).toContain(heading);
+    expect(prompt).toContain("AssertionError: assert 'Z' == 'a'");
+    expect(prompt.indexOf(heading)).toBeLessThan(prompt.indexOf("## Evidence: its own runs and reads"));
+    for (const blank of [undefined, "  \n"]) {
+      const without = renderAdvisorPrompt({
+        brief: "b",
+        trigger: { kind: "stall", detail: "d" },
+        findings: "f",
+        ...(blank === undefined ? {} : { checks: blank }),
+      });
+      expect(without).not.toContain(heading);
+    }
+  });
+
   it("asks for a design when a run passes slowly again after the worker changed its files (k8o)", async () => {
     // k8o: 10.47 s against a 10 s limit; ~250 s alone on speeding up the
     // design the brief prescribed, with no advisor asked.

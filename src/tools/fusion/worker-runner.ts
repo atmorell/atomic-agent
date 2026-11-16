@@ -51,6 +51,7 @@ import {
   formatRewriteSteer,
   formatRunBeforeRereadSteer,
   formatRunFirstSteer,
+  formatStandingCheckFailures,
   renderWorkerBrief,
   WORKER_REPLY_CHAR_BUDGET,
 } from "./worker-prompt.js";
@@ -1433,6 +1434,9 @@ async function runOneTask(
   // clears the count and the hold; `idleFailedEdit` is the last refused
   // write since, quoted in the steer.
   let standingFailed = 0;
+  // The last run's failures as the advisor reads them (k8an: it saw only
+  // the worker's passing runs and found "no defect").
+  let standingChecks: string | undefined;
   let idleSteps = 0;
   let checksIdle = false;
   let idleFailedEdit: string | undefined;
@@ -1472,6 +1476,7 @@ async function runOneTask(
       if (signal.aborted) return;
       if (run.outcomes.length === 0) {
         standingFailed = 0;
+        standingChecks = undefined;
         deps.logger?.info("fusion: worker's checks not run after a change", {
           taskId: task.id,
           reason: run.checksSkipped ?? "no outcome",
@@ -1494,6 +1499,7 @@ async function runOneTask(
         : run.outcomes;
       const failed = outcomes.filter((outcome) => !outcome.ok).length;
       standingFailed = failed;
+      standingChecks = formatStandingCheckFailures(ownChecks, outcomes);
       idleSteps = 0;
       // Green only for the code it ran: a write during the run reopens.
       checksGreen = failed === 0 && !changedSinceCheck;
@@ -1651,6 +1657,7 @@ async function runOneTask(
         trigger,
         findings: collector.findings(),
         evidence: collector.evidence(),
+        ...(standingChecks === undefined ? {} : { checks: standingChecks }),
       }),
       complete: deps.escalationComplete,
       signal: AbortSignal.any([options.signal, stopByPerson.signal]),
