@@ -14,12 +14,15 @@ import type { DelegateContract } from "./contract.js";
 import type { DelegateTask } from "./delegate-args.js";
 import {
   CHECK_DOUBT_NOTE,
+  CHECK_FAILING_RUNS_STOP,
   CHECK_IDLE_HOLD_STEPS,
   CHECK_IDLE_STEER_STEPS,
+  CHECK_RUNS_STOP_NOTE,
   CHECK_STOP_NOTE,
   CHECKS_GREEN_HOLD_NOTICE,
   CHECKS_IDLE_HOLD_NOTICE,
   CHECKS_RUN_BY_RUNTIME_RULE,
+  CHECKS_RUNS_STOPPED_HOLD_NOTICE,
   CHECKS_STOPPED_HOLD_NOTICE,
   checkFailureSignature,
   failingCheckLine,
@@ -468,6 +471,44 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     expect(h.holds[3 + CHECK_IDLE_HOLD_STEPS]).toEqual(stoppedHold);
   });
 
+  // k8at: the core worker's checks failed 10 runs in a row; each edit
+  // moved the failure, so the same-failure stop counted only 2 repeats.
+  const runsStoppedHold = { terminalOnly: true, notice: CHECKS_RUNS_STOPPED_HOLD_NOTICE };
+  const moving = (n: number) => [{ ok: false, error: `AssertionError on line ${n}` }, { ok: true }];
+  const runs = CHECK_FAILING_RUNS_STOP;
+
+  it("stops a worker whose checks failed run after run, though each failure differs", async () => {
+    const { runner, calls } = fakeRunner(Array.from({ length: runs }, (_, i) => moving(i + 1)));
+    const h = harness(dir, writeCore(runs), runner);
+    await run(h.deps);
+    expect(calls).toHaveLength(runs);
+    expect(h.holds.slice(0, runs)).toEqual(Array.from({ length: runs }, () => undefined));
+    expect(h.readAt[runs - 1]![0]).toContain("Fix the first failure");
+    expect(h.readAt[runs]![0]).toContain(`line ${runs}`);
+    expect(h.readAt[runs]![0]).toContain(CHECK_RUNS_STOP_NOTE);
+    expect(h.readAt[runs]![0]).not.toContain("Fix the first failure");
+    expect(h.holds[runs]).toEqual(runsStoppedHold);
+  });
+
+  it("counts the failing runs again from an all-green run", async () => {
+    const { runner } = fakeRunner([
+      ...Array.from({ length: runs - 1 }, (_, i) => moving(i + 1)),
+      [{ ok: true }, { ok: true }],
+      ...Array.from({ length: runs - 1 }, (_, i) => moving(i + 10)),
+    ]);
+    const h = harness(dir, writeCore(2 * runs - 1), runner);
+    await run(h.deps);
+    expect(h.readAt.flat().some((text) => text.includes(CHECK_RUNS_STOP_NOTE))).toBe(false);
+    expect(h.holds.at(-1)).toBeUndefined();
+  });
+
+  it("keeps the same-failure stop's notice past the run count", async () => {
+    const { runner } = fakeRunner(Array.from({ length: runs }, (_, i) => [same(i + 1), { ok: true }]));
+    const h = harness(dir, writeCore(runs), runner);
+    await run(h.deps);
+    expect(h.holds[runs]).toEqual(stoppedHold);
+  });
+
   it("tells the worker in its brief only when the runtime will run them", async () => {
     const { runner } = fakeRunner([[{ ok: true }, { ok: true }]]);
     const wired = harness(dir, [{}], runner);
@@ -537,6 +578,20 @@ describe("formatCheckResultSteer", () => {
         `  ${CHECK_STOP_NOTE}`,
         "Fix the first failure with `os.fs.edit`; the runtime runs the checks again after your next change, so do not run them yourself.",
       ].join("\n"),
+    );
+  });
+
+  it("drops the doubt and says stop at the failing-run count", () => {
+    const text = formatCheckResultSteer(
+      checks.slice(0, 2),
+      checks.slice(0, 2).map(() => ({ ok: false, detail: "exit 1" })),
+      new Map([[1, "doubt"]] as const),
+      true,
+    );
+    expect(text).not.toContain(CHECK_DOUBT_NOTE);
+    expect(text).toContain("- `python -c assert 1`: exit 1");
+    expect(text.split("\n").at(-1)).toBe(
+      `${CHECK_RUNS_STOP_NOTE} Reply now, naming each check that still fails and what your task text says about it.`,
     );
   });
 });

@@ -40,10 +40,12 @@ import {
 import type { DeclaredInputsRegistry } from "../os/fs/fs-declared-inputs.js";
 import {
   type CheckRepeatState,
+  CHECK_FAILING_RUNS_STOP,
   CHECK_IDLE_HOLD_STEPS,
   CHECK_IDLE_STEER_STEPS,
   CHECKS_GREEN_HOLD_NOTICE,
   CHECKS_IDLE_HOLD_NOTICE,
+  CHECKS_RUNS_STOPPED_HOLD_NOTICE,
   CHECKS_STOPPED_HOLD_NOTICE,
   checkFailureSignature,
   formatCheckIdleSteer,
@@ -1450,6 +1452,13 @@ async function runOneTask(
   // times until the run timed out; the third identical failure now stops
   // the steering for that check (the final run and the judge still see it).
   const failureRepeats = new Map<number, { signature: string; repeats: number }>();
+  // Finished runs in a row with any failure, reset by an all-green run;
+  // at `CHECK_FAILING_RUNS_STOP` the steer says stop and the next step may
+  // only reply (`checksRunsStopped`, cleared by a change like the others).
+  // The repeat rule above misses a worker whose every edit moves the
+  // failure (k8at, 16-11-2026: 10 failing runs, 2 counted as repeats).
+  let failingRuns = 0;
+  let checksRunsStopped = false;
   const repeatStatesFor = (
     outcomes: readonly { ok: boolean; detail: string }[],
   ): Map<number, CheckRepeatState> => {
@@ -1504,6 +1513,9 @@ async function runOneTask(
       const failed = outcomes.filter((outcome) => !outcome.ok).length;
       standingFailed = failed;
       idleSteps = 0;
+      failingRuns = failed > 0 ? failingRuns + 1 : 0;
+      const runsStopped = failingRuns >= CHECK_FAILING_RUNS_STOP;
+      checksRunsStopped = runsStopped && !changedSinceCheck;
       // Green only for the code it ran: a write during the run reopens.
       checksGreen = failed === 0 && !changedSinceCheck;
       const repeats = repeatStatesFor(outcomes);
@@ -1526,7 +1538,7 @@ async function runOneTask(
         });
         return;
       }
-      const text = formatCheckResultSteer(ownChecks, outcomes, repeats);
+      const text = formatCheckResultSteer(ownChecks, outcomes, repeats, runsStopped);
       // An unchanged all-green result says nothing new.
       if (failed === 0 && text === lastCheckSteer) return;
       lastCheckSteer = text;
@@ -1536,6 +1548,7 @@ async function runOneTask(
         checks: outcomes.length,
         failed,
         ...(repeats.size > 0 ? { repeated: repeats.size, stopped } : {}),
+        ...(runsStopped ? { failingRuns } : {}),
         ms: Date.now() - checkStarted,
         steered,
       });
@@ -1892,6 +1905,7 @@ async function runOneTask(
   // check still failing is one it was told to stop on (`checksStopped`).
   const greenHold: StepHold = { terminalOnly: true, notice: CHECKS_GREEN_HOLD_NOTICE };
   const stoppedHold: StepHold = { terminalOnly: true, notice: CHECKS_STOPPED_HOLD_NOTICE };
+  const runsStoppedHold: StepHold = { terminalOnly: true, notice: CHECKS_RUNS_STOPPED_HOLD_NOTICE };
   const idleHold: StepHold = { terminalOnly: true, notice: CHECKS_IDLE_HOLD_NOTICE };
   const waitForCheck = async (stepIndex: number): Promise<StepHold | undefined> => {
     const pending = pendingCheck;
@@ -1929,6 +1943,14 @@ async function runOneTask(
         stepIndex,
       });
       return stoppedHold;
+    }
+    if (checksRunsStopped) {
+      deps.logger?.info("fusion: worker's checks failed run after run — this step takes only reply", {
+        taskId: task.id,
+        stepIndex,
+        failingRuns,
+      });
+      return runsStoppedHold;
     }
     if (checksIdle) {
       deps.logger?.info("fusion: worker idle under a failing check — this step takes only reply", {
@@ -2062,6 +2084,7 @@ async function runOneTask(
             changedSinceCheck = true;
             checksGreen = false;
             checksStopped = false;
+            checksRunsStopped = false;
             idleSteps = 0;
             checksIdle = false;
             idleFailedEdit = undefined;

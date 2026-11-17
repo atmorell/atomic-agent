@@ -293,6 +293,22 @@ export const CHECKS_STOPPED_HOLD_NOTICE =
   "Every check still failing has failed the same way three times: this step takes only reply. Name the files you wrote and each check you stopped on.";
 
 /**
+ * Runs in a row of the worker's checks that had a failure, whatever the
+ * failure (`worker-runner.ts`): at this count the steer says stop and the
+ * next step takes only `reply`/`finish`; the fan-out runs the checks again
+ * and the judge rules. The same-failure stop misses a worker whose every
+ * edit moves the failure. Measured (task 8, 16-11-2026): all 7 runs where
+ * one worker reached 5 failing runs ended at the 600 s limit (k8z, k8ac,
+ * k8ad, k8aj, k8ak, k8an, k8at — k8at's core worker failed 10 runs from
+ * 18:11 to 18:17); of 6 runs that stopped at 4, two finished (520, 528 s).
+ */
+export const CHECK_FAILING_RUNS_STOP = 5;
+
+export const CHECK_RUNS_STOP_NOTE = `Your checks have failed after ${CHECK_FAILING_RUNS_STOP} changes in a row: stop editing. The judge sees the failures and rules on them.`;
+
+export const CHECKS_RUNS_STOPPED_HOLD_NOTICE = `Your task's checks failed after ${CHECK_FAILING_RUNS_STOP} changes in a row: this step takes only reply. Name the files you wrote and each check that still fails.`;
+
+/**
  * Steps in a row without a successful write while the last run of the
  * worker's checks had a failure (`worker-runner.ts`). The checks run only
  * after a change, so a worker that reads, runs and fails its edits never
@@ -411,11 +427,14 @@ export function failingCheckLine(
  * `outcomes` are index-aligned with `checks` (`runContractChecks`);
  * `repeats` holds the standing of a check whose failure came back
  * unchanged. Not called when every failing check is `silent`.
+ * `runsStopped`: this is the `CHECK_FAILING_RUNS_STOP`th failing run in a
+ * row — the failures are shown without the doubt, and the steer says stop.
  */
 export function formatCheckResultSteer(
   checks: readonly Readonly<Record<string, unknown>>[],
   outcomes: readonly { ok: boolean; detail: string }[],
   repeats: ReadonlyMap<number, CheckRepeatState> = new Map(),
+  runsStopped = false,
 ): string {
   const total = outcomes.length;
   const failed = outcomes
@@ -435,7 +454,9 @@ export function formatCheckResultSteer(
   const silent = failed.length - open.length - stopped.length;
   const shown = open
     .slice(0, CHECK_STEER_MAX_FAILURES)
-    .map((entry) => (entry.state === "doubt" ? `${line(entry)}\n  ${CHECK_DOUBT_NOTE}` : line(entry)));
+    .map((entry) =>
+      entry.state === "doubt" && !runsStopped ? `${line(entry)}\n  ${CHECK_DOUBT_NOTE}` : line(entry),
+    );
   const more = open.length - shown.length;
   return [
     `The runtime ran your task's checks after your last change: ${failed.length} of ${total} failed.`,
@@ -443,9 +464,11 @@ export function formatCheckResultSteer(
     ...(more > 0 ? [`- +${more} more failing`] : []),
     ...stopped.map((entry) => `${line(entry)}\n  ${CHECK_STOP_NOTE}`),
     ...(silent > 0 ? [`- +${silent} failing that you were told to stop working on — leave ${silent === 1 ? "it" : "them"}`] : []),
-    open.length > 0
-      ? `Fix the first failure with \`os.fs.edit\`; the runtime runs the checks again after your next change, so do not run them yourself.`
-      : `Nothing else fails: reply now, naming each check you stopped on and what your task text says about it.`,
+    runsStopped
+      ? `${CHECK_RUNS_STOP_NOTE} Reply now, naming each check that still fails and what your task text says about it.`
+      : open.length > 0
+        ? `Fix the first failure with \`os.fs.edit\`; the runtime runs the checks again after your next change, so do not run them yourself.`
+        : `Nothing else fails: reply now, naming each check you stopped on and what your task text says about it.`,
   ].join("\n");
 }
 
