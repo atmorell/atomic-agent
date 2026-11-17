@@ -1385,11 +1385,14 @@ describe("fusion.delegate", () => {
         // is pinning.
         ({ durationMs: _ms, queueWaitMs: _q, ...row }) => row,
       );
-      expect(result.summary).toMatchInlineSnapshot(`
+      // Which task was slowest is a wall-clock reading too: the two finish
+      // within a millisecond of each other, so either can win.
+      const summary = result.summary.replace(/slowest \[t[12]\]/, "slowest [t?]");
+      expect(summary).toMatchInlineSnapshot(`
         "2 tasks: 2 ok
         - [t1] ok — One
         - [t2] ok — Two
-        timing: 0s wall, slowest [t1] 0s
+        timing: 0s wall, slowest [t?] 0s
         [t1] ok — One (1 steps, 0s, 0 tool calls, 0 errors)
         (the worker produced no reply)
         [t2] ok — Two (1 steps, 0s, 0 tool calls, 0 errors)
