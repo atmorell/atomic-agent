@@ -112,7 +112,11 @@ export const FUSION_GUIDANCE = [
   // or an operator inside SUM; the facit failed exactly there. Across
   // six test files: a decimal in a formula 0, SUM with an expression 0
   // (Fable 5.2, greb H). Not paid for by trimming: one lever per build.
-  "A parser's `contract` checks accept, not only reject: each input rule at its widest — `1.5` inside an expression, either/or alone and mixed, spaces around every part.",
+  // k8bx-k8cc: the one grammar miss left was a trailing space (`=1+2 `),
+  // 4 of 24 kernels E-H and the sole facit failure in three runs; checks
+  // named it in 1 of 6. "around every part" put a space before `=` in
+  // 2 of 6, which the task rejects (Fable 5.2 (9), greb I).
+  "A parser's `contract` checks accept, not only reject: each input rule at its widest — `1.5` inside an expression, either/or alone and mixed, spaces between parts and a trailing space.",
   "Mutating tools are refused for you by design.",
   "Keep the design and judgement: read every reply against its brief.",
   VERIFY_LINE,
