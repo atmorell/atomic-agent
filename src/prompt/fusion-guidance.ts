@@ -107,12 +107,6 @@ export const FUSION_GUIDANCE = [
   // (Fable, same day). Paid for by "Mutating tools" below and by
   // shorter wording in the first, second, rework and "Yours alone" lines.
   "Give the trickiest part 4-6 input -> expected examples to run first, one full-size with a time limit your design meets: no redo-all per change.",
-  // k8br-k8bw (17-11-2026): both failing kerne checks copied all 15
-  // reject examples of the request but had no accept case with spaces
-  // or an operator inside SUM; the facit failed exactly there. Across
-  // six test files: a decimal in a formula 0, SUM with an expression 0
-  // (Fable 5.2, greb H). Not paid for by trimming: one lever per build.
-  "A parser's `contract` checks accept, not only reject: each input rule at its widest — `1.5` inside an expression, either/or alone and mixed, spaces around every part.",
   "Mutating tools are refused for you by design.",
   "Keep the design and judgement: read every reply against its brief.",
   VERIFY_LINE,
