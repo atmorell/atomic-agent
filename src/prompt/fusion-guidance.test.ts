@@ -280,6 +280,14 @@ describe("the machine facts in the ### fusion block", () => {
 
   it("asks for a design that meets its own full-size limit (k8o)", () => {
     // k8o: "recompute all after each set" took 10.47 s on a 10 s limit.
-    expect(FUSION_GUIDANCE).toContain("time limit your design meets: no redo-all per change");
+    expect(FUSION_GUIDANCE).toContain("one full-size with a time limit your design meets:");
+  });
+
+  it("names the design that meets it: writes only store, reads compute (k8bl-k8bq)", () => {
+    // k8bl-k8bq: every brief allowed a full recompute per write under the
+    // old "no redo-all per change"; compute-on-read packages ran in 3-4 s,
+    // recompute-on-write ones in 11-177 s.
+    expect(FUSION_GUIDANCE).toContain("time limit your design meets: writes only store, reads compute.");
+    expect(FUSION_GUIDANCE).not.toContain("no redo-all per change");
   });
 });

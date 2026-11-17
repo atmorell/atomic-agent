@@ -106,7 +106,11 @@ export const FUSION_GUIDANCE = [
   // spent ~250 s failing to speed up the design it was told to use
   // (Fable, same day). Paid for by "Mutating tools" below and by
   // shorter wording in the first, second, rework and "Yours alone" lines.
-  "Give the trickiest part 4-6 input -> expected examples to run first, one full-size with a time limit your design meets: no redo-all per change.",
+  // k8bl-k8bq (17-11-2026): "no redo-all per change" did not steer — all
+  // six briefs allowed a full recompute per `saet`. The two packages that
+  // computed on read and only stored on write ran the facit in 3-4 s; the
+  // four that recomputed in `saet` took 11-177 s (Fable 5.2, greb G).
+  "Give the trickiest part 4-6 input -> expected examples to run first, one full-size with a time limit your design meets: writes only store, reads compute.",
   "Mutating tools are refused for you by design.",
   "Keep the design and judgement: read every reply against its brief.",
   VERIFY_LINE,
