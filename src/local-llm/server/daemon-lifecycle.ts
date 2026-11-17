@@ -714,8 +714,23 @@ export function buildLlamaServerArgs(
   } else if (ubatchSize !== undefined) {
     args.push("--ubatch-size", ubatchSize);
   }
+  args.push("--cache-ram", PROMPT_CACHE_RAM_MIB);
   return args;
 }
+
+/**
+ * `--cache-ram` for every managed chat launch: the host-RAM prompt cache is
+ * off. That cache holds saved slot states in process memory (Atomic Core sets
+ * `LLAMA_ARG_CACHE_RAM=2048`; llama.cpp's own default is 8192 MiB), and on
+ * Windows it counts against the commit limit next to the GPU allocations
+ * WDDM already charges there. With a 27B model loaded the machine sat at
+ * 97 % commit while idle; Windows logged Resource-Exhaustion Event 2004 five
+ * seconds before llama-server died after a `bad allocation`, and the desktop
+ * app restarted it. The cost is that a slot handed to another conversation
+ * prefills its prompt again instead of restoring it. A command-line flag
+ * overrides the environment variable, so this value wins.
+ */
+const PROMPT_CACHE_RAM_MIB = "0";
 
 /**
  * Resolve the effective `--ctx-size` for a chat daemon launch. Impure

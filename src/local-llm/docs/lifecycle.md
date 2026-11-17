@@ -5,7 +5,7 @@ Owner: src/local-llm/
 
 External mode connects to an operator-provided llama-server. Managed mode uses model/backend installation, launch records and daemon lifecycle. The server process and model weights remain separate from the TypeScript runtime.
 
-Preserve launch ownership, port checks, records, health/model capability probes, restart behavior and stopOnExit. A live daemon discovered through a record is not necessarily a process this caller may kill. Capability/window/prefix-reuse decisions come from server/GGUF metadata and platform selection. Throughput is measured when available rather than fabricated.
+Preserve launch ownership, port checks, records, health/model capability probes, restart behavior and stopOnExit. A live daemon discovered through a record is not necessarily a process this caller may kill. Capability/window/prefix-reuse decisions come from server/GGUF metadata and platform selection. Throughput is measured when available rather than fabricated. Every chat launch ends with `--cache-ram 0`: llama.cpp's host-RAM prompt cache (Core sets 2048 MiB through `LLAMA_ARG_CACHE_RAM`) counts against the Windows commit limit beside a large model, and a 27B launch at 97 % commit died after a `bad allocation`; a slot handed to another conversation prefills again instead.
 
 Sources: [daemon lifecycle](../server/daemon-lifecycle.ts), [launch guard](../server/daemon-launch-guard.ts), [port holder](../server/port-holder.ts), [GGUF metadata](../catalog/gguf-metadata.ts), [backend selection](../backend/platform-assets.ts). Tests: [lifecycle](../server/daemon-lifecycle.test.ts), [metadata](../catalog/gguf-metadata.test.ts).
 

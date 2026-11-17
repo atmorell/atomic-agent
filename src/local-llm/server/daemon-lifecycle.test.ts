@@ -149,6 +149,8 @@ describe("buildLlamaServerArgs", () => {
       "-kvu",
       "-a",
       "qwen-3.5-4b",
+      "--cache-ram",
+      "0",
     ]);
     expect(args).not.toContain("--mmproj");
     expect(args).not.toContain("--chat-template-file");
@@ -408,6 +410,20 @@ describe("buildLlamaServerArgs", () => {
     expect(args).toContain("/tpl.jinja");
     expect(args).toContain("--mmproj");
     expect(args).toContain("/proj.gguf");
+  });
+
+  it("turns the host-RAM prompt cache off as the last flag of every chat launch", () => {
+    // Core's LLAMA_ARG_CACHE_RAM=2048 sat in commit beside a 27B model on
+    // Windows; a command-line flag overrides the environment variable.
+    for (const opts of [
+      baseOpts,
+      { ...baseOpts, mmprojFile: "/proj.gguf", ubatchSize: 512 },
+      { ...baseOpts, device: "cpu" as const, chatTemplateFile: "/tpl.jinja" },
+    ]) {
+      const args = buildLlamaServerArgs(opts, "/m.gguf", "alias", 16_384);
+      expect(args.slice(-2)).toEqual(["--cache-ram", "0"]);
+      expect(args.filter((a) => a === "--cache-ram")).toHaveLength(1);
+    }
   });
 });
 
