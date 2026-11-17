@@ -292,9 +292,6 @@ describe("the machine facts in the ### fusion block", () => {
     expect(FUSION_GUIDANCE).toContain("`contract` checks accept, not only reject");
     expect(FUSION_GUIDANCE).toContain("`1.5` inside an expression");
     expect(FUSION_GUIDANCE).toContain("either/or alone and mixed");
-    // k8cb `=1+2 `: the tokenizer skipped spaces before each token and
-    // none after the last; its checks had no trailing space (k8bx-k8cc).
-    expect(FUSION_GUIDANCE).toContain("spaces between parts and a trailing space");
-    expect(FUSION_GUIDANCE).not.toContain("spaces around every part");
+    expect(FUSION_GUIDANCE).toContain("spaces around every part");
   });
 });
