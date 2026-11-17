@@ -406,6 +406,13 @@ export interface StepContext {
    */
   toolSet?: StepToolSet;
   /**
+   * The only paths `os.fs.write` may take this step (a `beforeStep`
+   * hook's `StepWriteScope`); empty closes the tool. Held in the local
+   * per-request grammar (`resolveStepGrammar`) and at dispatch
+   * (`runFinalStepGate`); the prompt's catalog is untouched.
+   */
+  writePaths?: readonly string[];
+  /**
    * The turn's `RunTurnOptions.toolFilter`, when one is set. The loop has
    * already applied it to `toolDescriptors`; the step applies it once
    * more to the per-request grammar, so a hidden tool is not merely

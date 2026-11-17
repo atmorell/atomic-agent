@@ -10,7 +10,6 @@ import {
   BROWSER_CODE_RULE,
   EDIT_NOT_REWRITE_RULE,
   EXACT_SPELLING_RULE,
-  formatRewriteSteer,
   FOLLOW_UP_MAX_CHARS,
   ORIGINAL_REQUEST_CHAR_BUDGET,
   pickOriginalRequest,
@@ -149,7 +148,6 @@ describe("renderWorkerBrief — siblings and browser code (ATO-919)", () => {
     expect(at).toBeLessThan(brief.indexOf("- Finish with `reply`"));
     expect(EDIT_NOT_REWRITE_RULE).toContain("`os.fs.edit`");
     expect(EDIT_NOT_REWRITE_RULE).toMatch(/never by writing it whole again/);
-    expect(formatRewriteSteer("/w/a.py")).toContain("/w/a.py");
   });
 
   it("tells the worker to try its code on stdin, never in a scratch file (k8e)", () => {

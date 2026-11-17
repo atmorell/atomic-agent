@@ -8,7 +8,7 @@ import { createTurnLoopState } from "./turn/turn-state.js";
 import { checkpointStep } from "./turn/turn-checkpoint.js";
 import { recoverTurnStep, abortableSleep, reportTurnFailure } from "./turn/turn-recovery.js";
 import { recoverFromOutOfMemory } from "./turn/out-of-memory-recovery.js";
-import type { AgentLoopDependencies, RunTurnOptions, RunTurnResult, StepHold } from "./agent-contract.js";
+import type { AgentLoopDependencies, RunTurnOptions, RunTurnResult, StepHold, StepWriteScope } from "./agent-contract.js";
 export type { AgentLoopDependencies, ReflectionSegmentationConfig, ResolvedTurnLlmSlice, MemoryContextProviderInput, MemoryContext, MemoryContextProvider, LessonLifecycleOutcome, LessonLifecycleHook, SteeringChannel, TaskStopCause, RunTurnOptions, AgentLoopReason, AgentLoopEvent, RunTurnResult } from "./agent-contract.js";
 import { prepareAgentTurn, prepareTurnPolicies, prepareTurnBudgets, createTurnLoopTracker } from "./turn/turn-preparation.js";
 import { refreshMemoryContext, createSurfacedMemoryTracker } from "./turn/turn-memory-context.js";
@@ -300,10 +300,14 @@ export class AgentLoop {
         }
       }
       let hold: StepHold | undefined;
+      let writeScope: StepWriteScope | undefined;
       if (options.beforeStep) {
         try {
           const held = await options.beforeStep(i);
-          if (typeof held === "object" && held !== null && held.terminalOnly === true) hold = held;
+          if (typeof held === "object" && held !== null) {
+            if ("terminalOnly" in held && held.terminalOnly === true) hold = held;
+            else if ("writePaths" in held && Array.isArray(held.writePaths)) writeScope = held;
+          }
         } catch (error) {
           this.deps.logger?.warn("beforeStep hook failed; the step goes on", {
             sessionId: state.id,
@@ -364,6 +368,15 @@ export class AgentLoop {
       // A `beforeStep` hold narrows this step like the reserved final
       // one, but no ceiling bit: the turn goes on if it does not close.
       const terminalOnlyStep = finalizationStep || hold !== undefined;
+      // A write scope narrows only `os.fs.write`; a terminal-only step
+      // admits no write at all, so it has nothing to narrow there.
+      const stepWriteScope = terminalOnlyStep ? undefined : writeScope;
+      if (stepWriteScope !== undefined) {
+        noticeForThisStep =
+          noticeForThisStep === undefined
+            ? stepWriteScope.notice
+            : `${noticeForThisStep}\n\n${stepWriteScope.notice}`;
+      }
       // The stalled-review phase this step runs under, read before the
       // prompt is built (`review-stall.ts`): the notice joins the step's
       // `### notice` — inside `noticeForThisStep`, so a retry of the
@@ -491,6 +504,9 @@ export class AgentLoop {
                 ? { toolSet: reviewStallToolSet() }
                 : {}),
             ...(options.toolFilter ? { toolFilter: options.toolFilter } : {}),
+            ...(stepWriteScope !== undefined
+              ? { writePaths: stepWriteScope.writePaths }
+              : {}),
             toolRole,
             ...(turn.truncationRetry?.stepIndex === i &&
             turn.truncationRetry.maxTokens !== undefined

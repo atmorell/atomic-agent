@@ -144,6 +144,13 @@ export interface BatchExecutionContext {
    */
   toolSet?: StepToolSet;
   /**
+   * The only paths `os.fs.write` may take this step (a `beforeStep`
+   * write scope); empty refuses every write. A write elsewhere is
+   * answered with `writeScopeRefusal` in its slot — the local grammar
+   * holds the first `path` key, this holds the one `JSON.parse` keeps.
+   */
+  writePaths?: readonly string[];
+  /**
    * Plan mode, read at dispatch time rather than passed as a boolean.
    *
    * A getter for the same reason `dangerous.approvalRequired` is one

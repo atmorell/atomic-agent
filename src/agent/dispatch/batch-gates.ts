@@ -1,6 +1,6 @@
 import { checkPlanMode } from "../policies/plan-mode.js";
 import { checkFusionOrchestrator, emptyFusionOrchestratorState } from "../policies/fusion-orchestrator-mode.js";
-import { toolSetAdmits, toolSetRefusal } from "../policies/step-tool-set.js";
+import { toolSetAdmits, toolSetRefusal, writeScopeAdmits, writeScopeRefusal } from "../policies/step-tool-set.js";
 import type { ToolCallPayload } from "../../llm/grammar/tool-call-grammar.js";
 import { compressToolResult, type CompressedToolResult } from "../../compressor/result-compressor.js";
 import type { ToolRegistry } from "../../tools/tool-registry.js";
@@ -136,6 +136,12 @@ export function runFinalStepGate(
       proceed: false,
       vetoResult: toolSetRefusal(input.call.tool, ctx.toolSet),
     };
+  }
+  if (ctx.writePaths !== undefined && input.call.tool === "os.fs.write") {
+    const path = (input.call.args as Record<string, unknown> | undefined)?.path;
+    if (!writeScopeAdmits(ctx.writePaths, path)) {
+      return { proceed: false, vetoResult: writeScopeRefusal(path, ctx.writePaths) };
+    }
   }
   return { proceed: true };
 }

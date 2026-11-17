@@ -282,6 +282,7 @@ async function executeStepInner(
     ...(deps.tracker ? { tracker: deps.tracker } : {}),
     ...(ctx.terminalOnly ? { terminalOnly: true } : {}),
     ...(ctx.toolSet !== undefined ? { toolSet: ctx.toolSet } : {}),
+    ...(ctx.writePaths !== undefined ? { writePaths: ctx.writePaths } : {}),
     ...(deps.isPlanMode ? { isPlanMode: deps.isPlanMode } : {}),
     ...(deps.isFusionOrchestrator
       ? {

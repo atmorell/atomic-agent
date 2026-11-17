@@ -266,11 +266,6 @@ export function formatRunFirstSteer(path: string): string {
   return `You are reading ${path} again and have run nothing yet in this task. Run first: one \`os.shell.run\` with a short script on \`stdin\` that calls the case in doubt (the one your task or its findings name). Then read only the lines the error names.`;
 }
 
-/** The one steer sent when a worker rewrites a file it wrote itself. */
-export function formatRewriteSteer(path: string): string {
-  return `You just wrote ${path} whole again although you had already written it in this task. For every further change to a file you wrote, use \`os.fs.edit\` with only the lines that change — a whole-file rewrite costs minutes here.`;
-}
-
 /**
  * Measured (k8x, 16-11-2026): the core worker turned its brief's "run
  * these checks first: (a)…(f)" into one step of 16 `os.shell.run` calls

@@ -398,6 +398,54 @@ describe("AgentLoop mid-turn steering", () => {
     expect(result.stopCause).toBeUndefined();
   });
 
+  // Greb K: a fusion worker rewrote a file it had written instead of
+  // editing it; its runner now holds os.fs.write to the unwritten files.
+  it("a write scope adds its notice, refuses a write elsewhere and holds the grammar's write path", async () => {
+    const tails: string[] = [];
+    const grammars: string[] = [];
+    let calls = 0;
+    const loop = new AgentLoop({
+      registry: buildDefaultToolRegistry(),
+      slotManager: new SlotManager(2),
+      grammar: [
+        'root ::= "ok"',
+        'fs-write-args ::= "{" ws "\\"path\\"" ws ":" ws required-string "}"',
+      ].join("\n"),
+      llmComplete: async (params) => {
+        calls += 1;
+        grammars.push(String((params as { grammar?: string }).grammar ?? ""));
+        return makeCompletion(
+          calls === 1
+            ? JSON.stringify({ tool: "os.fs.write", args: { path: "done.py", content: "x" } })
+            : REPLY,
+        );
+      },
+      toolDescriptors: TOOLS,
+      capabilities: CAPS,
+      skillCatalog: SKILLS,
+      onEvent: (event) => {
+        if (event.type === "llm_event" && event.event.type === "prompt_captured") {
+          tails.push(event.event.tail);
+        }
+      },
+    });
+    const result = await loop.runTurn(createEmptySessionState({ id: "s-scope", workingDir }), {
+      userMessage: "go",
+      maxSteps: 6,
+      signal: new AbortController().signal,
+      beforeStep: async () => ({ writePaths: ["open.py"], notice: "os.fs.write now takes only: open.py." }),
+    });
+    expect(tails[0]).toContain("### notice");
+    expect(tails[0]).toContain("os.fs.write now takes only: open.py.");
+    expect(grammars[0]).toContain('fs-write-path ::= "\\"" ( "open.py" ) "\\""');
+    const writes = result.session.turns.filter(
+      (turn) => turn.kind === "tool_result" && turn.tool === "os.fs.write",
+    ) as { status: string; summary: string }[];
+    expect(writes.map((turn) => turn.status)).toEqual(["error"]);
+    expect(writes[0]!.summary).toContain("`done.py` was not written");
+    expect(result.reason).toBe("reply");
+  });
+
   it("behaves exactly as before when no inbox is wired in", async () => {
     const { loop, tails } = buildLoop({});
     const result = await loop.runTurn(

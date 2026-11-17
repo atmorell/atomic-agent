@@ -466,7 +466,7 @@ export const TERMINAL_TOOL_NAMES: readonly string[] = ["reply", "finish"];
 export function stepGrammarToolNames(
   ctx: Pick<
     StepContext,
-    "terminalOnly" | "toolSet" | "toolFilter" | "toolRole"
+    "terminalOnly" | "toolSet" | "toolFilter" | "toolRole" | "writePaths"
   >,
   deps: Pick<StepDependencies, "registry" | "isFusionOrchestrator">,
   descriptors: readonly ToolDescriptor[],
@@ -495,6 +495,13 @@ export function stepGrammarToolNames(
     names = names.filter((name) => filter(name));
     restricted = true;
   }
+  // An empty write scope closes `os.fs.write` (every file of a fusion
+  // worker's task is written); a non-empty one keeps the name and holds
+  // its path in `resolveStepGrammar`.
+  if (ctx.writePaths !== undefined && ctx.writePaths.length === 0) {
+    names = names.filter((name) => name !== "os.fs.write");
+    restricted = true;
+  }
   return restricted ? names : null;
 }
 
@@ -506,14 +513,15 @@ export function stepGrammarToolNames(
  * reserved final step (`finalizationStep`) — the turn's summary is never
  * cut mid-thought; the base grammar's configured bound
  * (`localModels.reasoningBudgetTokens`) otherwise, a held terminal-only
- * step included. Then the tool names (`stepGrammarToolNames`). An
- * unrestricted, non-final step under `thinking: on|auto` sends the base
- * grammar byte-identical.
+ * step included. Then the tool names (`stepGrammarToolNames`) and, under
+ * a non-empty write scope (`writePaths`), the `os.fs.write` path held to
+ * it. An unrestricted, non-final step under `thinking: on|auto` sends the
+ * base grammar byte-identical.
  */
 export function resolveStepGrammar(
   ctx: Pick<
     StepContext,
-    "terminalOnly" | "finalizationStep" | "toolSet" | "toolFilter" | "toolRole"
+    "terminalOnly" | "finalizationStep" | "toolSet" | "toolFilter" | "toolRole" | "writePaths"
   >,
   deps: Pick<StepDependencies, "registry" | "isFusionOrchestrator" | "grammar">,
   descriptors: readonly ToolDescriptor[],
@@ -525,6 +533,13 @@ export function resolveStepGrammar(
       ? withUnboundedReasoningPrelude(deps.grammar)
       : deps.grammar;
   const names = stepGrammarToolNames(ctx, deps, descriptors);
+  const writePaths =
+    !ctx.terminalOnly && ctx.writePaths !== undefined && ctx.writePaths.length > 0
+      ? ctx.writePaths
+      : undefined;
+  if (writePaths !== undefined) {
+    return buildGrammarForTools(base, names ?? descriptors.map((d) => d.name), { writePaths });
+  }
   return names === null ? base : buildGrammarForTools(base, names);
 }
 

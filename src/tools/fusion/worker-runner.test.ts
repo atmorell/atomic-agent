@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { AgentLoopEvent, RunTurnResult } from "../../agent/agent-loop.js";
 import {
@@ -1940,68 +1940,87 @@ describe("runWorkerTasks — the request's names", () => {
     }));
 });
 
-describe("runWorkerTasks — a rewrite of the worker's own file (k8b)", () => {
+describe("runWorkerTasks — a worker's written files are edited, not rewritten (greb K)", () => {
   type TurnOptions = Parameters<WorkerRunnerDeps["runTurn"]>[2];
 
-  // One step per call, in order: `[tool, path]`.
-  function calls(sequence: ReadonlyArray<readonly [string, string]>) {
+  // A platform-native root: `resolveUserPath` refuses a POSIX-absolute
+  // path on Windows.
+  const ROOT = resolve("/repo");
+  const at = (file: string): string => join(ROOT, file);
+
+  // One write per step; before each step (and once after the last) what
+  // `beforeStep` returned.
+  function writes(paths: readonly string[], seen: unknown[]) {
     return async ({ options }: { options: TurnOptions }) => {
-      sequence.forEach(([tool, path], step) => {
+      for (let step = 0; step <= paths.length; step += 1) {
+        seen.push(await options.beforeStep?.(step));
+        if (step === paths.length) break;
         options.eventHook?.({ type: "step_started", stepIndex: step });
         options.eventHook?.({
           type: "llm_event",
           event: {
             type: "tool_call_executed",
-            result: { tool, status: "ok", summary: "done", details: { path }, truncated: false },
+            result: { tool: "os.fs.write", status: "ok", summary: "done", details: { path: paths[step] }, truncated: false },
             batchIndex: 0,
             batchSize: 1,
           },
         });
         options.eventHook?.({ type: "step_finished", stepIndex: step, summary: "step done", durationMs: 1 });
-      });
-      return turnResult({ stepCount: sequence.length + 1 });
+      }
+      return turnResult({ stepCount: paths.length + 1 });
     };
   }
 
-  async function steersFor(sequence: ReadonlyArray<readonly [string, string]>): Promise<string[]> {
-    const steers: string[] = [];
-    const { deps } = harness(calls(sequence));
-    deps.steerWorker = (_id, text) => {
-      steers.push(text);
-      return true;
-    };
+  async function run(
+    files: string[] | undefined,
+    paths: readonly string[],
+  ): Promise<{ seen: unknown[]; logs: string[]; installed: boolean }> {
+    const seen: unknown[] = [];
+    const logs: string[] = [];
+    const { deps, calls } = harness(writes(paths, seen));
+    deps.workingDir = ROOT;
+    deps.logger = { info: (message: string) => logs.push(message) } as unknown as WorkerRunnerDeps["logger"];
     await runWorkerTasks(deps, {
       ...BASE,
-      tasks: tasks(1),
+      tasks: [{ ...tasks(1)[0]!, ...(files === undefined ? {} : { files }) }],
       maxWorkers: 1,
       signal: new AbortController().signal,
     });
-    return steers;
+    return { seen, logs, installed: calls[0]?.options.beforeStep !== undefined };
   }
 
-  it("steers once toward os.fs.edit when the worker writes its own file whole again", async () => {
-    // k8b: four files written six times, ~200 s of the task that set
-    // the fan-out's pace. The second rewrite is not steered again.
-    const steers = await steersFor([
-      ["os.fs.write", "/w/formel.py"],
-      ["os.fs.write", "/w/ark.py"],
-      ["os.fs.write", "/w/formel.py"],
-      ["os.fs.write", "/w/ark.py"],
-    ]);
-    expect(steers).toHaveLength(1);
-    expect(steers[0]).toContain("/w/formel.py");
-    expect(steers[0]).toContain("`os.fs.edit`");
+  it("installs no beforeStep for a task that declares no files and has no checks", async () => {
+    const { installed } = await run(undefined, [at("formel.py")]);
+    expect(installed).toBe(false);
   });
 
-  it("does not steer an edit, a new file, or a write after an edit of another file", async () => {
-    expect(
-      await steersFor([
-        ["os.fs.write", "/w/formel.py"],
-        ["os.fs.edit", "/w/formel.py"],
-        ["os.fs.write", "/w/ark.py"],
-        ["os.fs.edit", "/w/ark.py"],
-      ]),
-    ).toEqual([]);
+  it("holds nothing before the first declared file is written", async () => {
+    const { seen, installed } = await run(["formel.py", "ark.py"], [at("notes.txt")]);
+    expect(installed).toBe(true);
+    expect(seen).toEqual([undefined, undefined]);
+  });
+
+  it("after the first declared write, os.fs.write takes only the files still unwritten", async () => {
+    const { seen, logs } = await run(["formel.py", "ark.py"], [at("formel.py"), at("ark.py")]);
+    expect(seen[0]).toBeUndefined();
+    const open = seen[1] as { writePaths: string[]; notice: string };
+    expect(open.writePaths).toContain("ark.py");
+    expect(open.writePaths.some((path) => /formel/.test(path))).toBe(false);
+    expect(open.notice).toBe("`os.fs.write` now takes only `ark.py`. Change `formel.py` with `os.fs.edit`.");
+    const closed = seen[2] as { writePaths: string[]; notice: string };
+    expect(closed.writePaths).toEqual([]);
+    expect(closed.notice).toBe(
+      "`os.fs.write` is closed: every file of your task is written. Change `formel.py`, `ark.py` with `os.fs.edit`.",
+    );
+    expect(logs.filter((message) => message === "fusion: worker's writes narrowed to unwritten files")).toHaveLength(2);
+  });
+
+  it("matches a written path to a declared one across separators and case on Windows", async () => {
+    const written =
+      process.platform === "win32" ? join(ROOT.toUpperCase(), "Formel.py").replace(/\\/g, "/") : at("formel.py");
+    const { seen } = await run(["formel.py", "ark.py"], [written]);
+    expect((seen[1] as { writePaths: string[] }).writePaths).toContain("ark.py");
+    expect((seen[1] as { writePaths: string[] }).writePaths.some((path) => /formel/i.test(path))).toBe(false);
   });
 });
 

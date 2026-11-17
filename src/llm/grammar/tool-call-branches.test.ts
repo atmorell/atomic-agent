@@ -159,6 +159,59 @@ describe("per-request narrowing keeps or drops the fs branches", () => {
   });
 });
 
+// Greb K: 12 whole-file rewrites across steps in 9 of 35 runs (k8bf-k8cn),
+// 3 of those 9 correct; a written file is changed with os.fs.edit.
+describe("a write scope holds os.fs.write to the listed paths", () => {
+  const names = ["os.fs.read", "os.fs.write", "os.fs.edit"];
+  const open = ["C:\\w\\ark\\cli.py", "C:/w/ark/cli.py", "ark/cli.py"];
+
+  it("admits exactly the listed paths and nothing else", async () => {
+    for (const [id, grammar] of await grammars()) {
+      const g = buildGrammarForTools(grammar, names, { writePaths: open });
+      for (const path of open) {
+        expect(gbnfAccepts(g, "root", write({ path, content: "x" })), `${id} ${path}`).toBe(true);
+      }
+      for (const path of ["C:\\w\\ark\\core.py", "ark/core.py", "ark/cli.p", "c:\\w\\ark\\cli.py", "x"]) {
+        expect(gbnfAccepts(g, "root", write({ path, content: "x" })), `${id} ${path}`).toBe(false);
+      }
+      expect(gbnfAccepts(g, "root", call("os.fs.edit", { path: "ark/core.py", oldString: "a", newString: "b" })), id).toBe(true);
+      expect(gbnfAccepts(g, "root", read({ path: "ark/core.py" })), id).toBe(true);
+    }
+  });
+
+  it("escapes quotes, backslashes and dollars in a path", async () => {
+    const base = await buildGrammar(PLAIN_INSTRUCT_PROFILE);
+    const odd = ['C:\\a "b"\\$&.py', "d/$1.py"];
+    const g = buildGrammarForTools(base, names, { writePaths: odd });
+    for (const path of odd) expect(gbnfAccepts(g, "root", write({ path, content: "" })), path).toBe(true);
+    expect(gbnfAccepts(g, "root", write({ path: "d/.py", content: "" }))).toBe(false);
+  });
+
+  it("leaves the grammar byte-identical when the scope is unset or empty", async () => {
+    const base = await buildGrammar(PLAIN_INSTRUCT_PROFILE);
+    const plain = buildGrammarForTools(base, names);
+    expect(buildGrammarForTools(base, names, {})).toBe(plain);
+    expect(buildGrammarForTools(base, names, { writePaths: [] })).toBe(plain);
+    expect(plain).not.toContain("fs-write-path");
+  });
+
+  it("caches by the sorted scope next to the names", async () => {
+    const base = await buildGrammar(PLAIN_INSTRUCT_PROFILE);
+    const a = buildGrammarForTools(base, names, { writePaths: ["b.py", "a.py"] });
+    expect(buildGrammarForTools(base, names, { writePaths: ["a.py", "b.py", "a.py"] })).toBe(a);
+    const other = buildGrammarForTools(base, names, { writePaths: ["a.py"] });
+    expect(other).not.toBe(a);
+    expect(gbnfAccepts(other, "root", write({ path: "b.py", content: "" }))).toBe(false);
+    expect(buildGrammarForTools(base, names)).not.toContain("fs-write-path");
+  });
+
+  it("returns a base without the write rule unchanged", async () => {
+    const base = (await buildGrammar(PLAIN_INSTRUCT_PROFILE)).replace(/^fs-write-args ::= .*\n/m, "");
+    const narrowed = buildGrammarForTools(base, names);
+    expect(buildGrammarForTools(base, names, { writePaths: ["a.py"] })).toBe(narrowed);
+  });
+});
+
 /**
  * ATO-1114: the rest of the tools a small model reaches for in a coding or
  * file session. Each had only the generic `object`, so `{"args":{}}` was

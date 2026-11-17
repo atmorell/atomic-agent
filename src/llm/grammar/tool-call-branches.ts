@@ -147,3 +147,30 @@ export function grammarToolNames(grammar: string): string[] | null {
 function quoteToolNameLiteral(name: string): string {
   return quoteGbnf(`"${name}"`);
 }
+
+const FS_WRITE_ARGS_RULE_RE = /^fs-write-args ::= .*$/m;
+
+/**
+ * The `os.fs.write` branch held to `paths` (greb K): the `path` value of
+ * `fs-write-args` becomes `fs-write-path`, a flat alternation over the
+ * JSON spellings of `paths`, so a fusion worker cannot emit a whole-file
+ * rewrite of a file it already wrote — it changes those with
+ * `os.fs.edit`. The free `pair` tail can still repeat `path`, so the
+ * batch gate holds the same set at dispatch (`writeScopeAdmits`).
+ * Empty `paths`, or a grammar without the rule (an older file, or one
+ * whose `path` is not a `required-string`), is returned as it was.
+ */
+export function withWritePaths(grammar: string, paths: readonly string[]): string {
+  if (paths.length === 0) return grammar;
+  const line = grammar.match(FS_WRITE_ARGS_RULE_RE)?.[0];
+  if (line === undefined || !line.includes("required-string")) return grammar;
+  const scoped = line.replace("required-string", "fs-write-path");
+  const rule = String.raw`fs-write-path ::= "\"" ( ${paths.map(quoteWritePathLiteral).join(" | ")} ) "\""`;
+  // A function replacer: a path may hold `$`, which a string one expands.
+  return grammar.replace(FS_WRITE_ARGS_RULE_RE, () => `${scoped}\n${rule}`);
+}
+
+/** `C:\a.py` → the GBNF literal of its JSON string body, `C:\\a.py`. */
+function quoteWritePathLiteral(path: string): string {
+  return quoteGbnf(JSON.stringify(path).slice(1, -1));
+}

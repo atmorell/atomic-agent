@@ -1,5 +1,12 @@
 import { existsSync, readdirSync } from "node:fs";
-import type { AgentLoopEvent, BeforeStepHook, RunTurnResult, StepHold } from "../../agent/agent-contract.js";
+import { isAbsolute, relative } from "node:path";
+import type {
+  AgentLoopEvent,
+  BeforeStepHook,
+  RunTurnResult,
+  StepHold,
+  StepWriteScope,
+} from "../../agent/agent-contract.js";
 import type { ReasoningEffort } from "../../llm/provider/completion-types.js";
 import type { ApprovalGate } from "../../approval/approval-gate.js";
 import type { SessionState } from "../../session/session-state.js";
@@ -50,7 +57,6 @@ import {
   checkFailureSignature,
   formatCheckIdleSteer,
   formatCheckResultSteer,
-  formatRewriteSteer,
   formatRunBeforeRereadSteer,
   formatRunFirstSteer,
   renderWorkerBrief,
@@ -1357,23 +1363,6 @@ async function runOneTask(
       steered,
     });
   };
-  // A whole-file rewrite of a file this worker already wrote (k8b: two
-  // of six writes, ~200 s on the critical path) is steered once toward
-  // `os.fs.edit`. Checked before the collector observes the write, so
-  // the written set is what existed before this call.
-  let rewriteSteered = false;
-  const checkRewrite = (tool: string, details: Record<string, unknown> | undefined): void => {
-    if (rewriteSteered || tool !== "os.fs.write" || deps.steerWorker === undefined) return;
-    const before = new Set(collector.writtenPaths());
-    const again = writtenPathsOf(details).find((path) => before.has(path));
-    if (again === undefined) return;
-    rewriteSteered = deps.steerWorker(session.id, formatRewriteSteer(again));
-    deps.logger?.info("fusion: worker steered from a rewrite to os.fs.edit", {
-      taskId: task.id,
-      path: again,
-      steered: rewriteSteered,
-    });
-  };
   // A read of a module this worker wrote with no run since (k8h: written
   // at 119 s, read back three times, first run at 303 s) is steered once
   // toward running it. Any `os.shell.run` counts: the worker chose it.
@@ -1907,7 +1896,70 @@ async function runOneTask(
   const stoppedHold: StepHold = { terminalOnly: true, notice: CHECKS_STOPPED_HOLD_NOTICE };
   const runsStoppedHold: StepHold = { terminalOnly: true, notice: CHECKS_RUNS_STOPPED_HOLD_NOTICE };
   const idleHold: StepHold = { terminalOnly: true, notice: CHECKS_IDLE_HOLD_NOTICE };
-  const waitForCheck = async (stepIndex: number): Promise<StepHold | undefined> => {
+  // Greb K: a file of the task the worker has written is changed with
+  // `os.fs.edit`, never rewritten whole (k8b/k8cn: a rewrite cost ~200 s
+  // on the critical path; a once-only steer toward edit was not taken).
+  // From the first declared file written on, `os.fs.write` takes only
+  // the declared files still unwritten — the grammar cannot emit another
+  // path and dispatch refuses one — and nothing once all are written.
+  let lastWriteScope: string | undefined;
+  const writeScope = (stepIndex: number): StepWriteScope | undefined => {
+    const declared = task.files ?? [];
+    if (declared.length === 0) return undefined;
+    const written = new Set(
+      collector
+        .writtenPaths()
+        .map(resolvedKey)
+        .filter((key): key is string => key !== undefined),
+    );
+    const isWritten = (file: string): boolean => {
+      const key = resolvedKey(file);
+      return key !== undefined && written.has(key);
+    };
+    const done = declared.filter(isWritten);
+    if (done.length === 0) return undefined;
+    const open = declared.filter((file) => !isWritten(file));
+    const shown = (file: string): string => {
+      try {
+        const rel = relative(workingDir, resolveUserPath(file, workingDir));
+        return rel.length === 0 || rel.startsWith("..") || isAbsolute(rel)
+          ? file
+          : rel.replace(/\\/g, "/");
+      } catch {
+        return file;
+      }
+    };
+    const spellings = (file: string): string[] => {
+      const out = [file];
+      try {
+        const abs = resolveUserPath(file, workingDir);
+        out.push(abs, abs.replace(/\\/g, "/"), shown(file));
+      } catch {
+        // An unresolvable path keeps its declared spelling only.
+      }
+      return out;
+    };
+    const writePaths = [...new Set(open.flatMap(spellings))];
+    const edited = done.map((file) => `\`${shown(file)}\``).join(", ");
+    const notice =
+      open.length === 0
+        ? `\`os.fs.write\` is closed: every file of your task is written. Change ${edited} with \`os.fs.edit\`.`
+        : `\`os.fs.write\` now takes only ${open.map((file) => `\`${shown(file)}\``).join(", ")}. Change ${edited} with \`os.fs.edit\`.`;
+    const scopeKey = open.join("\n");
+    if (scopeKey !== lastWriteScope) {
+      lastWriteScope = scopeKey;
+      deps.logger?.info("fusion: worker's writes narrowed to unwritten files", {
+        taskId: task.id,
+        stepIndex,
+        open: open.map(shown),
+        written: done.map(shown),
+      });
+    }
+    return { writePaths, notice };
+  };
+  const waitForCheck = async (
+    stepIndex: number,
+  ): Promise<StepHold | StepWriteScope | undefined> => {
     const pending = pendingCheck;
     if (checkSignal.aborted) return undefined;
     if (pending !== undefined) {
@@ -1960,7 +2012,7 @@ async function runOneTask(
       });
       return idleHold;
     }
-    return undefined;
+    return writeScope(stepIndex);
   };
   try {
     const turn = await deps.runTurn(session, brief, {
@@ -1974,7 +2026,7 @@ async function runOneTask(
         ? {}
         : { reasoningEffort: options.workerReasoning }),
       ...(replyCap === undefined ? {} : { maxOutputTokens: replyCap }),
-      ...(checksAfterChange ? { beforeStep: waitForCheck } : {}),
+      ...(checksAfterChange || declaredFiles > 0 ? { beforeStep: waitForCheck } : {}),
       signal: turnSignal,
       eventHook: (event) => {
         // The first token — not `turn_started`, which fires before the
@@ -2088,11 +2140,6 @@ async function runOneTask(
             idleSteps = 0;
             checksIdle = false;
             idleFailedEdit = undefined;
-            try {
-              checkRewrite(result.tool, result.details);
-            } catch {
-              // A check never takes the worker down.
-            }
           } else if (result.status === "error" && WRITE_TOOLS.has(result.tool)) {
             idleFailedEdit = result.summary.replace(/\s+/g, " ").trim().slice(0, IDLE_FAILED_EDIT_CHARS);
           }

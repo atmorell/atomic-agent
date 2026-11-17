@@ -20,7 +20,7 @@ import {
   formatVetoInstruction,
 } from "./loop-detector.js";
 import { reviewStallToolSet } from "./review-stall.js";
-import { toolSetRefusal } from "./step-tool-set.js";
+import { toolSetRefusal, writeScopeRefusal } from "./step-tool-set.js";
 import { createTraceRecorder } from "../tracing/trace/trace-recorder.js";
 import type { TraceEvent } from "../tracing/trace/trace-event.js";
 
@@ -2128,5 +2128,64 @@ describe("executeBatch under a step tool set", () => {
     expect(out.results[1]!.compressed?.status).toBe("ok");
     expect(out.loopSignals).toEqual([]);
     expect(tracker.check("os.fs.read", { path: "a" }).count).toBe(0);
+  });
+});
+
+/**
+ * A step's write scope (greb K): `os.fs.write` outside the listed paths
+ * never reaches the registry; inside it, and every other tool, runs.
+ */
+describe("executeBatch under a write scope", () => {
+  it("refuses a write outside the scope with the scope's refusal and never dispatches it", async () => {
+    const write = vi.fn(async () => okResult("os.fs.write"));
+    const registry = buildRegistry({ "os.fs.write": write });
+    const out = await executeBatch(
+      toBatchInputs([{ tool: "os.fs.write", args: { path: "ark/core.py", content: "x" } }]),
+      registry,
+      { ...ctx(new AbortController().signal), writePaths: ["ark/cli.py"] },
+    );
+    expect(write).not.toHaveBeenCalled();
+    expect(out.results[0]!.compressed?.status).toBe("error");
+    expect(out.results[0]!.compressed?.summary).toBe(
+      writeScopeRefusal("ark/core.py", ["ark/cli.py"]).summary,
+    );
+    expect(out.results[0]!.compressed?.details).toMatchObject({ write_scope: true });
+  });
+
+  it("runs a write to a listed path spelled with other separators or a leading ./", async () => {
+    const write = vi.fn(async () => okResult("os.fs.write"));
+    const registry = buildRegistry({ "os.fs.write": write });
+    const out = await executeBatch(
+      toBatchInputs([
+        { tool: "os.fs.write", args: { path: "./ark/cli.py", content: "x" } },
+        { tool: "os.fs.write", args: { path: "ark\\cli.py", content: "x" } },
+      ]),
+      registry,
+      { ...ctx(new AbortController().signal), writePaths: ["ark/cli.py"] },
+    );
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(out.results.map((r) => r.compressed?.status)).toEqual(["ok", "ok"]);
+  });
+
+  it("an empty scope refuses every write and leaves edit and read alone", async () => {
+    const write = vi.fn(async () => okResult("os.fs.write"));
+    const edit = vi.fn(async () => okResult("os.fs.edit"));
+    const read = vi.fn(async () => okResult("os.fs.read"));
+    const registry = buildRegistry({ "os.fs.write": write, "os.fs.edit": edit, "os.fs.read": read });
+    const out = await executeBatch(
+      toBatchInputs([
+        { tool: "os.fs.read", args: { path: "ark/cli.py" } },
+        { tool: "os.fs.write", args: { path: "ark/cli.py", content: "x" } },
+        { tool: "os.fs.edit", args: { path: "ark/cli.py", oldString: "a", newString: "b" } },
+      ]),
+      registry,
+      { ...ctx(new AbortController().signal), writePaths: [] },
+    );
+    expect(write).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(edit).toHaveBeenCalledTimes(1);
+    expect(out.results[1]!.compressed?.summary).toBe(
+      writeScopeRefusal("ark/cli.py", []).summary,
+    );
   });
 });

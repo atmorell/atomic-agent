@@ -62,3 +62,48 @@ export function toolSetRefusal(
     truncated: false,
   };
 }
+
+/** A path as the write scope compares it: `/` separators, no `./`, case folded on Windows. */
+function writeScopeKey(path: string, platform: NodeJS.Platform): string {
+  const slashed = path.replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+  return platform === "win32" ? slashed.toLowerCase() : slashed;
+}
+
+/**
+ * Whether an `os.fs.write` to `path` is inside a step's write scope
+ * (`StepContext.writePaths`): the same spelling as a listed path up to
+ * separators, a leading `./` and, on Windows, case. A non-string path is
+ * not admitted; the tool would refuse it anyway.
+ */
+export function writeScopeAdmits(
+  writePaths: readonly string[],
+  path: unknown,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (typeof path !== "string" || path.length === 0) return false;
+  const key = writeScopeKey(path, platform);
+  return writePaths.some((listed) => writeScopeKey(listed, platform) === key);
+}
+
+/**
+ * The tool result an `os.fs.write` outside the step's write scope gets
+ * instead of running: a file the task already wrote is changed with
+ * `os.fs.edit`, and the open files are named.
+ */
+export function writeScopeRefusal(
+  path: unknown,
+  writePaths: readonly string[],
+): CompressedToolResult {
+  const shown = typeof path === "string" ? `\`${path}\`` : "that path";
+  const exits =
+    writePaths.length === 0
+      ? "every file of your task is written; change it with `os.fs.edit`"
+      : `\`os.fs.write\` takes only ${writePaths.map((p) => `\`${p}\``).join(", ")} this step; change a written file with \`os.fs.edit\``;
+  return {
+    tool: "os.fs.write",
+    status: "error",
+    summary: `${shown} was not written: ${exits}`,
+    details: { write_scope: true, path: typeof path === "string" ? path : null, admitted: [...writePaths] },
+    truncated: false,
+  };
+}

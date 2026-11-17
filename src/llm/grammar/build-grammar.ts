@@ -13,9 +13,18 @@ import {
 } from "../reasoning-budget.js";
 import { applyMcpToolNameRule } from "../../mcp/mcp-grammar-builder.js";
 import { buildReasoningPreludeRules } from "./reasoning-prelude.js";
-import { GRAMMAR_EXIT_TOOL, narrowToolCallRules } from "./tool-call-branches.js";
+import { GRAMMAR_EXIT_TOOL, narrowToolCallRules, withWritePaths } from "./tool-call-branches.js";
 
 export { grammarToolNames } from "./tool-call-branches.js";
+
+/** `buildGrammarForTools`'s per-request options. */
+export interface PerRequestGrammarOptions {
+  /**
+   * The only `path` values `os.fs.write` may take on this request (greb K:
+   * a fusion worker's unwritten files). Empty or unset leaves it free.
+   */
+  writePaths?: readonly string[];
+}
 
 function resolveDefaultGrammarsDir(): string {
   const nextToBinary = join(dirname(process.execPath), "grammars");
@@ -262,13 +271,22 @@ const perRequestGrammarCache = new Map<string, Map<string, string>>();
  * cut down to the dedicated branches. The rewritten rule is sorted and
  * deduplicated, and the result is cached by the sorted name list, so the
  * same set costs one string build per base grammar.
+ *
+ * `options.writePaths` (non-empty) also holds the `os.fs.write` branch to
+ * those paths (`withWritePaths`); the sorted set extends the cache key.
+ * Unset or empty, the output is what it was without the option.
  */
 export function buildGrammarForTools(
   baseGrammar: string,
   names: Iterable<string>,
+  options: PerRequestGrammarOptions = {},
 ): string {
   const sorted = Array.from(new Set([...names, GRAMMAR_EXIT_TOOL])).sort();
-  const key = sorted.join("\n");
+  const writePaths = Array.from(new Set(options.writePaths ?? [])).sort();
+  const key =
+    writePaths.length === 0
+      ? sorted.join("\n")
+      : `${sorted.join("\n")}\n\u0000write\n${writePaths.join("\n")}`;
   let perBase = perRequestGrammarCache.get(baseGrammar);
   if (perBase === undefined) {
     if (perRequestGrammarCache.size >= GRAMMAR_CACHE_BASES) {
@@ -280,7 +298,7 @@ export function buildGrammarForTools(
   }
   const cached = perBase.get(key);
   if (cached !== undefined) return cached;
-  const built = narrowToolCallRules(baseGrammar, sorted);
+  const built = withWritePaths(narrowToolCallRules(baseGrammar, sorted), writePaths);
   if (perBase.size >= GRAMMAR_CACHE_PER_BASE) {
     const oldest = perBase.keys().next();
     if (!oldest.done) perBase.delete(oldest.value);

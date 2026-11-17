@@ -87,8 +87,10 @@ function harness(dir: string, script: Step[], runChecks?: ContractCheckRunner) {
   const briefs: string[] = [];
   /** What each step read from the inbox, by step index. */
   const readAt: string[][] = [];
-  /** What `beforeStep` returned for each step (a hold, or undefined). */
+  /** What `beforeStep` returned for each step: a terminal hold, or undefined. */
   const holds: unknown[] = [];
+  /** The write scope `beforeStep` returned for each step (greb K), or undefined. */
+  const scopes: unknown[] = [];
   let writes = 0;
   const deps: WorkerRunnerDeps = {
     runTurn: async (session: SessionState, message: string, options: TurnOptions) => {
@@ -96,7 +98,10 @@ function harness(dir: string, script: Step[], runChecks?: ContractCheckRunner) {
       inbox.open(session.id);
       const written = new Set<string>();
       for (let i = 0; i < script.length; i += 1) {
-        holds.push(await options.beforeStep?.(i));
+        const held = await options.beforeStep?.(i);
+        const terminal = typeof held === "object" && held !== null && "terminalOnly" in held;
+        holds.push(terminal ? held : undefined);
+        scopes.push(terminal ? undefined : held);
         options.eventHook?.({ type: "step_started", stepIndex: i } as never);
         readAt.push([...inbox.drain(session.id)]);
         for (const file of script[i]!.writes ?? []) {
@@ -130,7 +135,7 @@ function harness(dir: string, script: Step[], runChecks?: ContractCheckRunner) {
     steerWorker: (sessionId, text) => inbox.push(sessionId, text),
     ...(runChecks === undefined ? {} : { runChecks }),
   };
-  return { deps, briefs, readAt, holds };
+  return { deps, briefs, readAt, holds, scopes };
 }
 
 /** A runner that answers each spec with the next verdict list; records every call. */
@@ -322,6 +327,11 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     await run(partial.deps, ["core.py", "missing.py"]);
     expect(green.calls).toHaveLength(0);
     expect(partial.holds).toEqual([undefined, undefined]);
+    // Greb K: the write scope rides on the same hook, checks or not.
+    expect(failing.scopes[0]).toBeUndefined();
+    expect(failing.scopes[1]).toMatchObject({ writePaths: [] });
+    expect((partial.scopes[1] as { writePaths: string[] }).writePaths).toContain("missing.py");
+    expect((partial.scopes[1] as { writePaths: string[] }).writePaths.some((path) => /core/.test(path))).toBe(false);
   });
 
   it("reopens after a change and holds again only once the checks are green", async () => {

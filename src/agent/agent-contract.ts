@@ -526,8 +526,22 @@ export interface StepHold {
   notice: string;
 }
 
+/**
+ * What a `beforeStep` hook may ask of a step that is not held: every tool
+ * stays, but `os.fs.write` takes only `writePaths` — in the local grammar
+ * and at dispatch — with `notice` in `### notice`. Empty `writePaths`
+ * closes the tool. A fusion worker's files are written once and then
+ * changed with `os.fs.edit` this way (greb K: whole-file rewrites across
+ * steps, 3 of 9 runs correct against 17 of 26 without). A hold wins over
+ * a scope; the reserved final step drops it.
+ */
+export interface StepWriteScope {
+  writePaths: readonly string[];
+  notice: string;
+}
+
 /** `RunTurnOptions.beforeStep`. */
-export type BeforeStepHook = (stepIndex: number) => Promise<void | StepHold>;
+export type BeforeStepHook = (stepIndex: number) => Promise<void | StepHold | StepWriteScope>;
 
 export interface RunTurnOptions {
   /** Frozen policy for this turn, its workers and background reflection. */
@@ -649,7 +663,8 @@ export interface RunTurnOptions {
    * checks after a change has steered the result (worker-runner.ts).
    * The hook bounds its own wait; one that throws is logged and the
    * step goes on. Not counted in the step's duration. A `StepHold` it
-   * returns narrows that step to `reply`/`finish` (see `StepHold`).
+   * returns narrows that step to `reply`/`finish` (see `StepHold`); a
+   * `StepWriteScope` narrows only `os.fs.write`'s paths.
    */
   beforeStep?: BeforeStepHook;
   /**
