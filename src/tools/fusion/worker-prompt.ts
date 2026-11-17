@@ -314,8 +314,13 @@ export const CHECKS_STOPPED_HOLD_NOTICE =
  * one worker reached 5 failing runs ended at the 600 s limit (k8z, k8ac,
  * k8ad, k8aj, k8ak, k8an, k8at — k8at's core worker failed 10 runs from
  * 18:11 to 18:17); of 6 runs that stopped at 4, two finished (520, 528 s).
+ * Lowered to 3 (greb J, Fable 17-11-2026, runs k8bf-k8ci): of 15 first-wave
+ * workers that reached a third failing run, 2 later went green and 13 went
+ * on ~92 s (0-194 s) while the other slot idled — in 6 of them the judge
+ * voided the failing check as contradicting the request — whereas 30 of 33
+ * judge-briefed rework workers passed on their first check run.
  */
-export const CHECK_FAILING_RUNS_STOP = 5;
+export const CHECK_FAILING_RUNS_STOP = 3;
 
 export const CHECK_RUNS_STOP_NOTE = `Your checks have failed after ${CHECK_FAILING_RUNS_STOP} changes in a row: stop editing. The judge sees the failures and rules on them.`;
 

@@ -254,7 +254,8 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     expect(h.readAt[1]![0]).not.toContain(CHECK_DOUBT_NOTE);
     expect(h.readAt[2]![0]).toContain(CHECK_DOUBT_NOTE);
     expect(h.readAt[3]![0]).toContain(CHECK_STOP_NOTE);
-    expect(h.readAt[3]![0]).toContain("Nothing else fails: reply now");
+    // The third identical failure is also the third failing run in a row.
+    expect(h.readAt[3]![0]).toContain(CHECK_RUNS_STOP_NOTE);
     expect(h.readAt[4]).toEqual([]);
   });
 
@@ -283,7 +284,9 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     expect(text).toContain("- `python core.py --bad`: exit 2: usage");
     expect(text).not.toContain("line 3 AssertionError");
     expect(text).toContain("- +1 failing that you were told to stop working on — leave it");
-    expect(text).toContain("Fix the first failure");
+    // Fourth failing run in a row: the run count says stop, not fix.
+    expect(text).toContain(CHECK_RUNS_STOP_NOTE);
+    expect(text).not.toContain("Fix the first failure");
   });
 
   it("starts over when a stopped check passes and then fails again", async () => {
@@ -340,6 +343,9 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
 
   // k8ad: stopped at 282 s, the worker edited against a wrong assert to 600 s.
   const stoppedHold = { terminalOnly: true, notice: CHECKS_STOPPED_HOLD_NOTICE };
+  // k8at: the core worker's checks failed 10 runs in a row; each edit
+  // moved the failure, so the same-failure stop counted only 2 repeats.
+  const runsStoppedHold = { terminalOnly: true, notice: CHECKS_RUNS_STOPPED_HOLD_NOTICE };
 
   it("holds the step after the third identical failure to reply only, not at the doubt", async () => {
     const { runner } = fakeRunner([1, 2, 3].map((n) => [same(n), { ok: true }]));
@@ -359,7 +365,9 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     expect(h.holds[4]).toEqual(stoppedHold);
   });
 
-  it("holds nothing while another check fails openly next to a stopped one", async () => {
+  // Greb J: from the third failing run in a row the run count holds, so
+  // when the same-failure hold drops, the run-count hold is what is left.
+  it("drops the same-failure hold while another check fails openly next to a stopped one", async () => {
     const { runner } = fakeRunner([
       ...[1, 2, 3].map((n) => [same(n), { ok: true }]),
       [same(4), { ok: false, error: "exit 2: usage" }],
@@ -367,10 +375,10 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     const h = harness(dir, writeCore(4), runner);
     await run(h.deps);
     expect(h.holds[3]).toEqual(stoppedHold);
-    expect(h.holds[4]).toBeUndefined();
+    expect(h.holds[4]).toEqual(runsStoppedHold);
   });
 
-  it("drops the hold when the stopped failure changes", async () => {
+  it("drops the same-failure hold when the stopped failure changes", async () => {
     const { runner } = fakeRunner([
       ...[1, 2, 3].map((n) => [same(n), { ok: true }]),
       [{ ok: false, error: "AssertionError on line 9" }, { ok: true }],
@@ -378,8 +386,9 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     const h = harness(dir, writeCore(4), runner);
     await run(h.deps);
     expect(h.holds[3]).toEqual(stoppedHold);
-    expect(h.holds[4]).toBeUndefined();
+    expect(h.holds[4]).toEqual(runsStoppedHold);
     expect(h.readAt[4]![0]).toContain("1 of 2 failed");
+    expect(h.readAt[4]![0]).toContain(CHECK_RUNS_STOP_NOTE);
   });
 
   // k8ak: one wrong assert failed 5 runs with a new message each time and
@@ -398,7 +407,7 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     expect(h.holds[3]).toEqual(stoppedHold);
   });
 
-  it("starts over when the failure moves to another check line", async () => {
+  it("starts the same-failure count over when the failure moves to another check line", async () => {
     const { runner } = fakeRunner([
       [atCheckLine(1), { ok: true }],
       [atCheckLine(2), { ok: true }],
@@ -409,7 +418,9 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     expect(h.readAt[2]![0]).toContain(CHECK_DOUBT_NOTE);
     expect(h.readAt[3]![0]).not.toContain(CHECK_DOUBT_NOTE);
     expect(h.readAt[3]![0]).not.toContain(CHECK_STOP_NOTE);
-    expect(h.holds[3]).toBeUndefined();
+    // Only the run count stops it: three failing runs in a row.
+    expect(h.readAt[3]![0]).toContain(CHECK_RUNS_STOP_NOTE);
+    expect(h.holds[3]).toEqual(runsStoppedHold);
   });
 
   // k8an: 19 steps without a write under a failing check, 222-478 s; the
@@ -471,10 +482,7 @@ describe("a worker's checks run by the runtime after a change (k8z)", () => {
     expect(h.holds[3 + CHECK_IDLE_HOLD_STEPS]).toEqual(stoppedHold);
   });
 
-  // k8at: the core worker's checks failed 10 runs in a row; each edit
-  // moved the failure, so the same-failure stop counted only 2 repeats.
-  const runsStoppedHold = { terminalOnly: true, notice: CHECKS_RUNS_STOPPED_HOLD_NOTICE };
-  const moving = (n: number) => [{ ok: false, error: `AssertionError on line ${n}` }, { ok: true }];
+  const moving =(n: number) => [{ ok: false, error: `AssertionError on line ${n}` }, { ok: true }];
   const runs = CHECK_FAILING_RUNS_STOP;
 
   it("stops a worker whose checks failed run after run, though each failure differs", async () => {
@@ -578,6 +586,23 @@ describe("formatCheckResultSteer", () => {
         `  ${CHECK_STOP_NOTE}`,
         "Fix the first failure with `os.fs.edit`; the runtime runs the checks again after your next change, so do not run them yourself.",
       ].join("\n"),
+    );
+  });
+
+  // Greb J: in the runner a check reaches "stop" on the third failing run
+  // in a row, which the run count now also stops; the formatter keeps it.
+  it("says reply when every failure left is one the worker was told to stop on", () => {
+    const text = formatCheckResultSteer(
+      checks.slice(0, 2),
+      [
+        { ok: false, detail: "exit 1" },
+        { ok: true, detail: "" },
+      ],
+      new Map([[0, "stop"]] as const),
+    );
+    expect(text).toContain(CHECK_STOP_NOTE);
+    expect(text.split("\n").at(-1)).toBe(
+      "Nothing else fails: reply now, naming each check you stopped on and what your task text says about it.",
     );
   });
 
