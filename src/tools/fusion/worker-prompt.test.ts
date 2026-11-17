@@ -24,6 +24,7 @@ import {
   siblingFilesRule,
   START_LISTING_LIMIT,
   STDIN_SELF_TEST_RULE,
+  TESTS_FROM_REQUEST_RULE,
 } from "./worker-prompt.js";
 import {
   FUSION_WORKER_APPROVAL_MARKER,
@@ -239,6 +240,20 @@ describe("renderWorkerBrief — the original request", () => {
     expect(EXACT_SPELLING_RULE).toContain("letter for letter");
     expect(EXACT_SPELLING_RULE).toContain("in your tests");
     expect(renderWorkerBrief(TASK, { workingDir: "/repo" })).not.toContain(EXACT_SPELLING_RULE);
+  });
+
+  it("tells a test-writing worker to test each input rule of the request, after the named cases (k8bf-k8bk)", () => {
+    // Four of six runs failed on `=1.5*4`, `SUM(A1, B1, 5)` and spaces;
+    // the package's own tests never put a decimal in a formula.
+    const brief = renderWorkerBrief(TASK, { workingDir: "/repo", originalRequest: REQUEST });
+    const at = brief.indexOf(TESTS_FROM_REQUEST_RULE);
+    expect(at).toBeGreaterThan(brief.indexOf(NAMED_CASES_RULE));
+    expect(at).toBeLessThan(brief.indexOf("- Finish with `reply`"));
+    expect(TESTS_FROM_REQUEST_RULE).toMatch(/^- If your task writes tests:/);
+    expect(TESTS_FROM_REQUEST_RULE).toContain("`1.5`");
+    expect(TESTS_FROM_REQUEST_RULE).toContain("before, between and after");
+    expect(TESTS_FROM_REQUEST_RULE).toContain("Never change another task's code");
+    expect(renderWorkerBrief(TASK, { workingDir: "/repo" })).not.toContain(TESTS_FROM_REQUEST_RULE);
   });
 
   it("omits the section entirely when there is no request (or only whitespace)", () => {

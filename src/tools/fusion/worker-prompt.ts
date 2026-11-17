@@ -239,6 +239,19 @@ export const SLOW_PASS_RULE =
 export const NAMED_CASES_RULE =
   "- The examples in your task are a minimum. Before you reply, also run each function, operator and error your task names once (for an error: an unknown command or a missing argument, bad input, a missing or corrupt file) and check the whole output, stderr included, is what the task says.";
 
+/**
+ * Measured (k8bf-k8bk, 17-11-2026): four of six runs failed the facit
+ * on the request's formula grammar — `=1.5*4`, `= A1 + B2 * 3 `,
+ * `SUM(A1, B1, 5)`, `SUM(A1:A3, B1*2)` — and the package's own tests had
+ * no decimal in a formula in any run. The core worker is closed by the
+ * green hold before it probes (so `NAMED_CASES_RULE` does not reach it);
+ * the test worker finishes minutes early, has the request quoted, and the
+ * runtime runs its tests before the judge, whose retry gets the failures.
+ * Only rendered when the brief quotes an original request (Fable 5.2).
+ */
+export const TESTS_FROM_REQUEST_RULE =
+  "- If your task writes tests: write one test for each rule in the original request about what input is accepted. Use the request's own example values (a number it writes as `1.5` is tested as `1.5`); test every 'either ... or' with each alternative alone, both mixed in one call, and one alternative that starts like the other; where spaces are allowed, put them before, between and after the parts. Assert only results the request states or plain arithmetic gives. Never change another task's code to make a test pass: name the failing tests in your reply.";
+
 /** The one steer sent when a worker reads a module it has not run since writing it. */
 export function formatRunBeforeRereadSteer(path: string): string {
   return `You are reading ${path} again without having run it since you wrote it. Run it first: one \`os.shell.run\` with a short script on \`stdin\` that imports it and calls the part in doubt. Then read only the lines the error names.`;
@@ -540,6 +553,7 @@ export function renderWorkerBrief(
     ...(options.checksRunAfterChange === true ? [CHECKS_RUN_BY_RUNTIME_RULE] : []),
     SLOW_PASS_RULE,
     NAMED_CASES_RULE,
+    ...(request.length > 0 ? [TESTS_FROM_REQUEST_RULE] : []),
     BROWSER_CODE_RULE,
     ...(request.length > 0 ? [EXACT_SPELLING_RULE] : []),
     `- Finish with \`reply\` carrying the concise result of this task (about ${WORKER_REPLY_CHAR_BUDGET} characters at most). That reply is the ONLY thing the orchestrator receives — findings, file paths, decisions and anything it needs to merge your part must be inside it.`,
