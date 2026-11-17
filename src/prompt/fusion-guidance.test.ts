@@ -144,12 +144,14 @@ describe("the ### fusion prefix section", () => {
     // what the orchestrator needed and could not see when a four-worker
     // fan-out overflowed its server; ~100 tokens is what that costs.
     // F43's restore line was paid for by shortening the others — the
-    // budget is the budget.
-    expect(FUSION_GUIDANCE.length).toBeLessThan(1400);
-    expect(buildFusionGuidance(FACTS).length).toBeLessThan(1900);
+    // budget is the budget. k8br-k8bw's accept-checks line (~165 chars)
+    // raised it once instead: trimming other lines in the same build
+    // would measure two levers as one.
+    expect(FUSION_GUIDANCE.length).toBeLessThan(1550);
+    expect(buildFusionGuidance(FACTS).length).toBeLessThan(2100);
     expect(
       buildFusionGuidance({ ...FACTS, tokensPerSecond: 6.4 }).length,
-    ).toBeLessThan(1900);
+    ).toBeLessThan(2100);
   });
 });
 
@@ -281,5 +283,15 @@ describe("the machine facts in the ### fusion block", () => {
   it("asks for a design that meets its own full-size limit (k8o)", () => {
     // k8o: "recompute all after each set" took 10.47 s on a 10 s limit.
     expect(FUSION_GUIDANCE).toContain("time limit your design meets: no redo-all per change");
+  });
+
+  it("asks a parser's contract checks to accept each input rule at its widest (k8br-k8bw)", () => {
+    // k8br `=SUM(A1:A3, B1*2)` and k8bu `= A1 + B2 * 3 ` failed the
+    // facit; their kerne checks held all 15 reject examples and none of
+    // these accept cases.
+    expect(FUSION_GUIDANCE).toContain("`contract` checks accept, not only reject");
+    expect(FUSION_GUIDANCE).toContain("`1.5` inside an expression");
+    expect(FUSION_GUIDANCE).toContain("either/or alone and mixed");
+    expect(FUSION_GUIDANCE).toContain("spaces around every part");
   });
 });
